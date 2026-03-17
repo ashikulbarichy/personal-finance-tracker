@@ -413,6 +413,13 @@ export function TransactionFormModal({
     const resolvedPayeeId = formData.type === 'expense' ? await resolvePayee() : null;
     const resolvedPayerId = formData.type === 'income' ? await resolvePayer() : null;
 
+    // Helper to pick a sensible currency for a given account
+    const getCurrencyForAccount = (accountId: string | undefined | null) => {
+      if (!accountId) return displayCurrency || 'USD';
+      const acc = accounts.find((a) => a.id === accountId);
+      return acc?.currency || displayCurrency || 'USD';
+    };
+
     if (formData.type === 'transfer') {
       const amount = parseFloat(formData.amount);
       const fromAccount = accounts.find((a) => a.id === formData.account_id);
@@ -430,6 +437,7 @@ export function TransactionFormModal({
           description: baseDescription + (toAccount ? ` (to ${toAccount.name})` : ''),
           transaction_date: formData.transaction_date,
           timezone: formData.timezone,
+          currency: getCurrencyForAccount(formData.account_id),
           tags: selectedTags,
           group_id: groupId || null,
           notes: formData.notes || null,
@@ -444,6 +452,7 @@ export function TransactionFormModal({
           description: baseDescription + (fromAccount ? ` (from ${fromAccount.name})` : ''),
           transaction_date: formData.transaction_date,
           timezone: formData.timezone,
+          currency: getCurrencyForAccount(formData.to_account_id),
           tags: selectedTags,
           group_id: groupId || null,
           notes: formData.notes || null,
@@ -458,9 +467,10 @@ export function TransactionFormModal({
         .map((s) => {
           const splitTitle = s.title?.trim();
           const title = splitTitle ? `${mainTitle}: ${splitTitle}` : mainTitle;
+          const accountId = s.account_id || formData.account_id;
           return {
             user_id: user.id,
-            account_id: s.account_id || formData.account_id,
+            account_id: accountId,
             category_id: s.category_id || null,
             payee_id: formData.type === 'expense' ? resolvedPayeeId : null,
             payer_id: formData.type === 'income' ? resolvedPayerId : null,
@@ -470,6 +480,7 @@ export function TransactionFormModal({
             description: s.description || formData.description,
             transaction_date: formData.transaction_date,
             timezone: formData.timezone,
+            currency: getCurrencyForAccount(accountId),
             notes: formData.notes || null,
             tags: selectedTags,
             group_id: groupId || null,
@@ -493,6 +504,7 @@ export function TransactionFormModal({
         description: formData.description,
         transaction_date: formData.transaction_date,
         timezone: formData.timezone,
+        currency: getCurrencyForAccount(formData.account_id),
         notes: formData.notes,
         tags: selectedTags,
         group_id: groupId || null,

@@ -40,7 +40,7 @@ export function Transactions() {
     const [txRes, accRes, catRes, payeesRes, profRes] = await Promise.all([
       supabase
         .from('transactions')
-        .select('*, accounts(name), categories(name, color), payees(name), payers:payer_id(name)')
+        .select('*')
         .eq('user_id', user.id)
         .order('transaction_date', { ascending: false }),
       supabase.from('accounts').select('*').eq('user_id', user.id).eq('is_active', true),
@@ -49,7 +49,33 @@ export function Transactions() {
       supabase.from('profiles').select('default_currency').eq('id', user.id).single(),
     ]);
 
-    if (txRes.data) setTransactions(txRes.data as TransactionWithDetails[]);
+    if (txRes.error) {
+      console.error('Failed to load transactions', txRes.error);
+      setTransactions([]);
+    } else if (txRes.data) {
+      const accMap = new Map(accRes.data?.map((a) => [a.id, a]) ?? []);
+      const catMap = new Map(catRes.data?.map((c) => [c.id, c]) ?? []);
+      const payeeMap = new Map(payeesRes.data?.map((p) => [p.id, p]) ?? []);
+
+      const withDetails: TransactionWithDetails[] = txRes.data.map((t) => ({
+        ...(t as Transaction),
+        accounts: accMap.get(t.account_id)
+          ? { name: accMap.get(t.account_id)!.name }
+          : null,
+        categories: t.category_id && catMap.get(t.category_id)
+          ? { name: catMap.get(t.category_id)!.name, color: catMap.get(t.category_id)!.color }
+          : null,
+        payees: t.payee_id && payeeMap.get(t.payee_id)
+          ? { name: payeeMap.get(t.payee_id)!.name }
+          : null,
+        payers: t.payer_id && payeeMap.get(t.payer_id)
+          ? { name: payeeMap.get(t.payer_id)!.name }
+          : null,
+      }));
+
+      setTransactions(withDetails);
+    }
+
     if (accRes.data) setAccounts(accRes.data);
     if (catRes.data) setCategories(catRes.data);
     if (payeesRes.data) setPayees(payeesRes.data);
@@ -71,14 +97,19 @@ export function Transactions() {
   };
 
   const filteredTransactions = transactions.filter((t) => {
+    const term = searchTerm.toLowerCase().trim();
+
     const matchesSearch =
-      t.title?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      t.description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      t.accounts?.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      t.payees?.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      t.payers?.name.toLowerCase().includes(searchTerm.toLowerCase());
-    const txType = t.description?.toLowerCase().includes('transfer') ? 'transfer' : t.type;
-    const matchesType = filterType === 'all' || txType === filterType;
+      !term ||
+      t.title?.toLowerCase().includes(term) ||
+      t.description?.toLowerCase().includes(term) ||
+      t.accounts?.name.toLowerCase().includes(term) ||
+      t.payees?.name.toLowerCase().includes(term) ||
+      t.payers?.name.toLowerCase().includes(term);
+
+    // Use the actual transaction type from the database
+    const matchesType = filterType === 'all' || t.type === filterType;
+
     return matchesSearch && matchesType;
   });
 

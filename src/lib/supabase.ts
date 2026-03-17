@@ -1,15 +1,11 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from './database.types';
 
-const supabaseUrl =
-  import.meta.env.VITE_SUPABASE_URL ??
-  import.meta.env.NEXT_PUBLIC_SUPABASE_URL ??
-  import.meta.env.NEXT_PUBLIC_FIN_SUPABASE_URL;
-
-const supabaseAnonKey =
-  import.meta.env.VITE_SUPABASE_ANON_KEY ??
-  import.meta.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-  import.meta.env.NEXT_PUBLIC_FIN_SUPABASE_ANON_KEY;
+// Vite-only environment variables.
+// Make sure you define these in your local .env and in Vercel:
+// VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables');

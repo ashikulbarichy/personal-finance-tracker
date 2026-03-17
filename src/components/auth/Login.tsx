@@ -10,6 +10,7 @@ export function Login({ onToggle }: LoginProps) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
   const { signIn } = useAuth();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -17,7 +18,7 @@ export function Login({ onToggle }: LoginProps) {
     setError('');
     setLoading(true);
 
-    const { error } = await signIn(email, password);
+    const { error } = await signIn(email, password, rememberMe);
     if (error) {
       setError(error.message);
     }
@@ -69,6 +70,17 @@ export function Login({ onToggle }: LoginProps) {
                 onChange={(e) => setPassword(e.target.value)}
                 className="mt-1 block w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
+            </div>
+            <div className="flex items-center justify-between">
+              <label className="inline-flex items-center gap-2 text-xs text-slate-400">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="rounded border-slate-600 text-blue-500 focus:ring-blue-500"
+                />
+                <span>Keep me logged in</span>
+              </label>
             </div>
           </div>
 

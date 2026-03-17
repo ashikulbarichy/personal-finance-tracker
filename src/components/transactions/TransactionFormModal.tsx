@@ -271,9 +271,9 @@ export function TransactionFormModal({
   const [groupId, setGroupId] = useState('');
   const [budgetId, setBudgetId] = useState('');
   const [isSplit, setIsSplit] = useState(false);
-  const [splits, setSplits] = useState<
-    { title: string; category_id: string; amount: string; description: string }[]
-  >([]);
+    const [splits, setSplits] = useState<
+      { title: string; category_id: string; account_id: string; amount: string; description: string }[]
+    >([]);
   const [dateTouched, setDateTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -460,7 +460,7 @@ export function TransactionFormModal({
           const title = splitTitle ? `${mainTitle}: ${splitTitle}` : mainTitle;
           return {
             user_id: user.id,
-            account_id: formData.account_id,
+            account_id: s.account_id || formData.account_id,
             category_id: s.category_id || null,
             payee_id: formData.type === 'expense' ? resolvedPayeeId : null,
             payer_id: formData.type === 'income' ? resolvedPayerId : null,
@@ -759,8 +759,8 @@ export function TransactionFormModal({
                       setIsSplit(e.target.checked);
                       if (e.target.checked && splits.length === 0) {
                         setSplits([
-                          { title: '', category_id: formData.category_id, amount: '', description: '' },
-                          { title: '', category_id: formData.category_id, amount: '', description: '' },
+                          { title: '', category_id: formData.category_id, account_id: formData.account_id, amount: '', description: '' },
+                          { title: '', category_id: formData.category_id, account_id: formData.account_id, amount: '', description: '' },
                         ]);
                       }
                     }}
@@ -780,22 +780,58 @@ export function TransactionFormModal({
                     className="text-xs text-blue-400 hover:text-blue-300">+ Add split</button>
                 </div>
                 {splits.map((split, i) => (
-                  <div key={i} className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                  <div key={i} className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
                     <div>
                       <label className="block text-xs font-medium text-slate-400 mb-1">Amount</label>
-                      <input type="number" step="0.01" required value={split.amount}
-                        onChange={(e) => setSplits((p) => p.map((s, idx) => idx === i ? { ...s, amount: e.target.value } : s))}
-                        className={inputCls} />
+                      <input
+                        type="number"
+                        step="0.01"
+                        required
+                        value={split.amount}
+                        onChange={(e) =>
+                          setSplits((p) =>
+                            p.map((s, idx) => (idx === i ? { ...s, amount: e.target.value } : s))
+                          )
+                        }
+                        className={inputCls}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-400 mb-1">Destination Account</label>
+                      <SelectCombobox
+                        items={accounts.map((a) => ({
+                          id: a.id,
+                          label: a.name,
+                          meta: a.type.replace('_', ' '),
+                        }))}
+                        value={split.account_id || formData.account_id}
+                        onSelect={(id) =>
+                          setSplits((p) =>
+                            p.map((s, idx) => (idx === i ? { ...s, account_id: id } : s))
+                          )
+                        }
+                        placeholder="Select account…"
+                      />
                     </div>
                     <div>
                       <label className="block text-xs font-medium text-slate-400 mb-1">Category</label>
-                      <select value={split.category_id}
-                        onChange={(e) => setSplits((p) => p.map((s, idx) => idx === i ? { ...s, category_id: e.target.value } : s))}
-                        className={inputCls}>
+                      <select
+                        value={split.category_id}
+                        onChange={(e) =>
+                          setSplits((p) =>
+                            p.map((s, idx) => (idx === i ? { ...s, category_id: e.target.value } : s))
+                          )
+                        }
+                        className={inputCls}
+                      >
                         <option value="">No category</option>
-                        {categories.filter((c) => c.type === formData.type || c.type === 'expense').map((c) => (
-                          <option key={c.id} value={c.id}>{c.name}</option>
-                        ))}
+                        {categories
+                          .filter((c) => c.type === formData.type || c.type === 'expense')
+                          .map((c) => (
+                            <option key={c.id} value={c.id}>
+                              {c.name}
+                            </option>
+                          ))}
                       </select>
                     </div>
                     <div>

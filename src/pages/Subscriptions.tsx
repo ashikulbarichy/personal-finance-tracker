@@ -49,6 +49,7 @@ export function Subscriptions() {
   const [subs, setSubs] = useState<SubWithDetails[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [enabledCurrencies, setEnabledCurrencies] = useState<string[]>(['USD']);
   const [rates, setRates] = useState<RateRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -70,15 +71,20 @@ export function Subscriptions() {
         .order('name'),
       supabase.from('categories').select('*').eq('user_id', user.id).eq('type', 'expense'),
       supabase.from('accounts').select('*').eq('user_id', user.id).eq('is_active', true),
-      supabase.from('profiles').select('default_currency').eq('id', user.id).single(),
+      supabase.from('profiles').select('default_currency, enabled_currencies').eq('id', user.id).single(),
     ]);
 
     setSubs((subsRes.data ?? []) as SubWithDetails[]);
     setCategories(catRes.data ?? []);
     setAccounts(accRes.data ?? []);
     const dc = profRes.data?.default_currency ?? 'USD';
+    const enabled =
+      ((profRes.data?.enabled_currencies as string[] | null | undefined) ?? [dc]).filter(Boolean);
+    const unique = Array.from(new Set(enabled.length ? enabled : [dc]));
+
     setDisplayCurrency(dc);
-    setFormData((prev) => ({ ...prev, currency: dc }));
+    setEnabledCurrencies(unique);
+    setFormData((prev) => ({ ...prev, currency: prev.currency || dc }));
 
     // load exchange rates from localStorage shared with ExchangeRates page
     try {
@@ -274,9 +280,21 @@ export function Subscriptions() {
                 </div>
                 <div className="w-24">
                   <label className="block text-xs font-medium text-slate-400 mb-1">Currency</label>
-                  <input type="text" value={formData.currency} maxLength={4}
-                    onChange={(e) => setFormData({ ...formData, currency: e.target.value.toUpperCase() })}
-                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm" />
+                  <select
+                    value={formData.currency}
+                    onChange={(e) => setFormData({ ...formData, currency: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-800 border border-slate-700 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                  >
+                    {(
+                      formData.currency && !enabledCurrencies.includes(formData.currency)
+                        ? [formData.currency, ...enabledCurrencies]
+                        : enabledCurrencies
+                    ).map((code) => (
+                      <option key={code} value={code}>
+                        {code}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </div>
 

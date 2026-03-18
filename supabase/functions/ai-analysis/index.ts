@@ -144,8 +144,8 @@ Deno.serve(async (req) => {
 
   const prompt = buildPrompt(snapshot);
 
-  // Cheapest Tier 1 models first; skip on 400/429 and try next
-  const models = ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b', 'gemini-1.5-flash'];
+  // Cheapest confirmed Tier 1 models first; skip on 400/404/429 and try next
+  const models = ['gemini-3.1-flash-lite-preview', 'gemini-1.5-flash-8b', 'gemini-1.5-flash'];
   const errors: string[] = [];
 
   for (const model of models) {
@@ -154,7 +154,8 @@ Deno.serve(async (req) => {
       return json(200, { ok: true, analysis: result.analysis, modelUsed: result.modelUsed });
     }
     errors.push(result.error);
-    if (result.status !== 429 && result.status !== 400) break;
+    const skippable = [400, 404, 429];
+    if (!skippable.includes(result.status)) break;
   }
 
   return json(200, { ok: false, error: `All models failed: ${errors.join(' | ')}` });

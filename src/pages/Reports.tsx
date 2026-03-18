@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { Calendar, TrendingUp, TrendingDown, Activity, PieChart as PieIcon, BarChart2, UserCheck, Users } from 'lucide-react';
+import { Calendar, TrendingUp, TrendingDown, Activity, PieChart as PieIcon, BarChart2, UserCheck, Users, Sparkles, AlertTriangle, CheckCircle2, ChevronUp, ChevronDown, Minus, Zap, RefreshCw } from 'lucide-react';
+import type { AIAnalysis } from '../types/aiAnalysis';
 
 interface CategorySpending {
   category: string;
@@ -465,6 +466,11 @@ export function Reports() {
   const [payeePayerTab, setPayeePayerTab] = useState<'payee' | 'payer'>('payee');
   const [monthlyCatData, setMonthlyCatData] = useState<MonthlyCatData>({ months: [], categories: [], monthTotals: [] });
 
+  /* ── AI Analysis state ── */
+  const [aiAnalysis, setAiAnalysis] = useState<AIAnalysis | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+
   useEffect(() => {
     const now = new Date();
     const end = now.toISOString().split('T')[0];
@@ -637,6 +643,111 @@ export function Reports() {
   const savingsRate = totalIncome > 0 ? (((totalIncome - totalExpenses) / totalIncome) * 100).toFixed(1) : '0';
   const days = useMemo(() => Math.max(1, Math.ceil((new Date(endDate).getTime() - new Date(startDate).getTime()) / (1000 * 60 * 60 * 24))), [startDate, endDate]);
 
+  /* ── Generate AI Analysis ── */
+  const generateAIAnalysis = useCallback(async () => {
+    if (!user) return;
+    setAiLoading(true);
+    setAiError(null);
+
+    try {
+      // Fetch supplemental data: goals, budgets, net worth components
+      const [goalsRes, budgetsRes, accountsRes, assetsRes, loansRes] = await Promise.all([
+        supabase.from('savings_goals').select('name, target_amount, current_amount, deadline, timeline').eq('user_id', user.id).eq('is_completed', false),
+        supabase.from('budgets').select('id, name, period, amount').eq('user_id', user.id),
+        supabase.from('accounts').select('balance').eq('user_id', user.id).eq('is_active', true),
+        supabase.from('assets').select('current_value').eq('user_id', user.id).eq('is_active', true),
+        supabase.from('loans').select('current_balance, type').eq('user_id', user.id).eq('is_active', true),
+      ]);
+
+      // Budget spent amounts for the current period
+      const budgetIds = (budgetsRes.data ?? []).map((b) => b.id);
+      let budgetSpent: Record<string, number> = {};
+      if (budgetIds.length > 0 && startDate && endDate) {
+        const { data: bTx } = await supabase
+          .from('transactions')
+          .select('budget_id, amount')
+          .eq('user_id', user.id)
+          .eq('type', 'expense')
+          .in('budget_id', budgetIds)
+          .gte('transaction_date', startDate)
+          .lte('transaction_date', endDate);
+        (bTx ?? []).forEach((t) => {
+          if (t.budget_id) budgetSpent[t.budget_id] = (budgetSpent[t.budget_id] ?? 0) + Number(t.amount);
+        });
+      }
+
+      // Net worth
+      const totalBalance  = (accountsRes.data ?? []).reduce((s, a) => s + Number(a.balance), 0);
+      const totalAssetVal = (assetsRes.data ?? []).reduce((s, a) => s + Number(a.current_value), 0);
+      const totalAssets   = totalBalance + totalAssetVal;
+      const totalLiabs    = (loansRes.data ?? []).filter((l) => l.type === 'borrowing').reduce((s, l) => s + Number(l.current_balance), 0);
+
+      // Build snapshot
+      const periodLabel =
+        period === 'month' ? 'This Month'
+        : period === 'quarter' ? 'This Quarter'
+        : period === 'year' ? 'This Year'
+        : `${startDate} – ${endDate}`;
+
+      const totalExp = totalExpenses || 0;
+
+      const snapshot = {
+        period: periodLabel,
+        currency: displayCurrency,
+        totalIncome,
+        totalExpenses: totalExp,
+        savingsRate: parseFloat(savingsRate),
+        netWorth: totalAssets - totalLiabs,
+        totalAssets,
+        totalLiabilities: totalLiabs,
+        categorySpending: categorySpending.map((c) => ({
+          category: c.category,
+          amount: c.amount,
+          pct: totalExp > 0 ? (c.amount / totalExp) * 100 : 0,
+        })),
+        topPayees: payeeAnalysis.slice(0, 8),
+        topPayers: payerAnalysis.slice(0, 8),
+        savingsGoals: (goalsRes.data ?? []).map((g) => ({
+          name: g.name,
+          target: Number(g.target_amount),
+          current: Number(g.current_amount),
+          pct: Number(g.target_amount) > 0 ? (Number(g.current_amount) / Number(g.target_amount)) * 100 : 0,
+          deadline: g.deadline ?? undefined,
+          timeline: (g as { timeline?: string }).timeline ?? undefined,
+        })),
+        budgets: (budgetsRes.data ?? []).map((b) => {
+          const spent = budgetSpent[b.id] ?? 0;
+          return {
+            name: b.name,
+            period: b.period,
+            allocated: Number(b.amount),
+            spent,
+            pct: Number(b.amount) > 0 ? (spent / Number(b.amount)) * 100 : 0,
+          };
+        }),
+        monthlyTrend: monthlyCatData.months.map((month, i) => ({
+          month,
+          income: 0,   // monthlyCatData only tracks expenses; income trend omitted here
+          expenses: monthlyCatData.monthTotals[i] ?? 0,
+        })),
+      };
+
+      const { data, error } = await supabase.functions.invoke<{ ok: boolean; analysis: AIAnalysis }>('ai-analysis', {
+        body: snapshot,
+      });
+
+      if (error || !data?.ok) {
+        setAiError((error as { message?: string })?.message ?? 'AI analysis failed. Check that GEMINI_API_KEY is set.');
+      } else {
+        setAiAnalysis(data.analysis);
+      }
+    } catch (e) {
+      setAiError(String(e));
+    } finally {
+      setAiLoading(false);
+    }
+  }, [user, period, startDate, endDate, totalIncome, totalExpenses, savingsRate, displayCurrency, categorySpending, payeeAnalysis, payerAnalysis, monthlyCatData]);
+
   return (
     <div className="px-4 py-4 md:px-8 md:py-8 space-y-5">
 
@@ -665,6 +776,209 @@ export function Reports() {
                 className="px-3 py-1.5 text-xs bg-slate-800 border border-slate-600 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </>
           )}
+        </div>
+      </div>
+
+      {/* ══ AI Financial Advisor ══ */}
+      <div className="bg-gradient-to-br from-violet-950/60 via-[#141927] to-indigo-950/40 border border-violet-700/30 rounded-2xl overflow-hidden">
+
+        {/* Header bar */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-5 py-4 border-b border-violet-700/20">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-violet-500/30 to-indigo-500/30 flex items-center justify-center shrink-0">
+              <Sparkles size={18} className="text-violet-300" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-slate-100">AI Financial Advisor</p>
+              <p className="text-[11px] text-slate-500">Powered by Gemini 2.0 Flash · Personalised to your data</p>
+            </div>
+          </div>
+          <button
+            onClick={generateAIAnalysis}
+            disabled={aiLoading}
+            className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:bg-violet-900/50 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-xl transition-all shadow-md shadow-violet-950/40 shrink-0"
+          >
+            {aiLoading
+              ? <><RefreshCw size={13} className="animate-spin" />Analysing…</>
+              : <><Sparkles size={13} />{aiAnalysis ? 'Refresh Analysis' : 'Generate Analysis'}</>}
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="px-5 py-4">
+          {/* Error */}
+          {aiError && (
+            <div className="flex items-start gap-3 p-4 bg-red-500/10 border border-red-500/25 rounded-xl text-sm text-red-400">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+              <span>{aiError}</span>
+            </div>
+          )}
+
+          {/* Loading skeleton */}
+          {aiLoading && !aiAnalysis && (
+            <div className="space-y-3 animate-pulse">
+              <div className="h-20 bg-slate-800/60 rounded-xl" />
+              <div className="grid grid-cols-2 gap-3">
+                <div className="h-32 bg-slate-800/60 rounded-xl" />
+                <div className="h-32 bg-slate-800/60 rounded-xl" />
+              </div>
+              <div className="h-40 bg-slate-800/60 rounded-xl" />
+            </div>
+          )}
+
+          {/* Empty state */}
+          {!aiLoading && !aiAnalysis && !aiError && (
+            <div className="flex flex-col items-center justify-center py-10 text-center gap-3">
+              <Sparkles size={40} className="text-violet-700" strokeWidth={1} />
+              <p className="text-sm text-slate-400 max-w-sm">
+                Click <span className="text-violet-400 font-medium">Generate Analysis</span> to get personalised recommendations based on your spending, goals, and budgets.
+              </p>
+            </div>
+          )}
+
+          {/* ── Analysis results ── */}
+          {aiAnalysis && !aiLoading && (() => {
+            const score = aiAnalysis.health_score;
+            const scoreColor =
+              score >= 8 ? 'text-emerald-400' :
+              score >= 6 ? 'text-blue-400' :
+              score >= 4 ? 'text-amber-400' : 'text-red-400';
+            const scoreBg =
+              score >= 8 ? 'from-emerald-500/20 to-emerald-900/10 border-emerald-700/30' :
+              score >= 6 ? 'from-blue-500/20 to-blue-900/10 border-blue-700/30' :
+              score >= 4 ? 'from-amber-500/20 to-amber-900/10 border-amber-700/30' :
+              'from-red-500/20 to-red-900/10 border-red-700/30';
+            const priorityStyles: Record<string, string> = {
+              high:   'bg-red-500/15 text-red-400 border border-red-500/25',
+              medium: 'bg-amber-500/15 text-amber-400 border border-amber-500/25',
+              low:    'bg-blue-500/15 text-blue-400 border border-blue-500/25',
+            };
+            const priorityIcon = (p: string) =>
+              p === 'high' ? <ChevronUp size={10} /> :
+              p === 'low'  ? <ChevronDown size={10} /> :
+              <Minus size={10} />;
+
+            return (
+              <div className="space-y-5">
+
+                {/* Health score + summary */}
+                <div className={`flex flex-col sm:flex-row items-start sm:items-center gap-5 p-4 bg-gradient-to-br ${scoreBg} border rounded-xl`}>
+                  <div className="flex flex-col items-center shrink-0">
+                    <span className={`text-5xl font-black ${scoreColor}`}>{score}</span>
+                    <span className="text-[10px] text-slate-500 mt-0.5">out of 10</span>
+                    <span className={`text-xs font-semibold mt-1 ${scoreColor}`}>{aiAnalysis.health_label}</span>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-1">Financial Health Summary</p>
+                    <p className="text-sm text-slate-200 leading-relaxed">{aiAnalysis.summary}</p>
+                  </div>
+                </div>
+
+                {/* Strengths & Concerns */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="bg-emerald-500/5 border border-emerald-700/25 rounded-xl p-4">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-emerald-400 mb-3 uppercase tracking-wider">
+                      <CheckCircle2 size={13} /> Strengths
+                    </p>
+                    <ul className="space-y-2">
+                      {aiAnalysis.strengths.map((s, i) => (
+                        <li key={i} className="flex items-start gap-2 text-xs text-slate-300">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mt-1.5 shrink-0" />
+                          {s}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div className="bg-red-500/5 border border-red-700/25 rounded-xl p-4">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-red-400 mb-3 uppercase tracking-wider">
+                      <AlertTriangle size={13} /> Concerns
+                    </p>
+                    <ul className="space-y-2">
+                      {aiAnalysis.concerns.map((c, i) => (
+                        <li key={i} className="flex items-start gap-2 text-xs text-slate-300">
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-500 mt-1.5 shrink-0" />
+                          {c}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+
+                {/* Recommendations */}
+                {aiAnalysis.recommendations.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Recommendations</p>
+                    <div className="space-y-3">
+                      {aiAnalysis.recommendations.map((rec, i) => (
+                        <div key={i} className="flex items-start gap-3 p-3.5 bg-slate-800/50 border border-slate-700/50 rounded-xl hover:bg-slate-800/70 transition-colors">
+                          <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 mt-0.5 ${priorityStyles[rec.priority]}`}>
+                            {priorityIcon(rec.priority)}
+                            {rec.priority.toUpperCase()}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-semibold text-slate-100 mb-0.5">{rec.title}</p>
+                            <p className="text-xs text-slate-400 leading-relaxed">{rec.detail}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Goal & Budget advice in 2 columns */}
+                {(aiAnalysis.goal_advice.length > 0 || aiAnalysis.budget_advice.length > 0) && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {aiAnalysis.goal_advice.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Goal Advice</p>
+                        <div className="space-y-2.5">
+                          {aiAnalysis.goal_advice.map((g, i) => (
+                            <div key={i} className="p-3 bg-slate-800/40 border border-slate-700/40 rounded-xl">
+                              <p className="text-xs font-semibold text-violet-400 mb-1">{g.goal}</p>
+                              <p className="text-xs text-slate-400 leading-relaxed">{g.advice}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {aiAnalysis.budget_advice.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-3">Budget Advice</p>
+                        <div className="space-y-2.5">
+                          {aiAnalysis.budget_advice.map((b, i) => (
+                            <div key={i} className="p-3 bg-slate-800/40 border border-slate-700/40 rounded-xl">
+                              <p className="text-xs font-semibold text-cyan-400 mb-1">{b.budget}</p>
+                              <p className="text-xs text-slate-400 leading-relaxed">{b.advice}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Quick action items */}
+                {aiAnalysis.action_items.length > 0 && (
+                  <div className="p-4 bg-violet-500/5 border border-violet-700/25 rounded-xl">
+                    <p className="flex items-center gap-1.5 text-xs font-semibold text-violet-400 mb-3 uppercase tracking-wider">
+                      <Zap size={12} /> Quick Action Items
+                    </p>
+                    <ul className="space-y-2">
+                      {aiAnalysis.action_items.map((item, i) => (
+                        <li key={i} className="flex items-start gap-2.5 text-xs text-slate-300">
+                          <span className="w-5 h-5 rounded-full bg-violet-500/20 text-violet-400 text-[10px] font-bold flex items-center justify-center shrink-0 mt-0.5">
+                            {i + 1}
+                          </span>
+                          {item}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+              </div>
+            );
+          })()}
         </div>
       </div>
 

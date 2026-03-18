@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useUserPrefs } from '../contexts/UserPrefsContext';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { TrendingUp, TrendingDown, Wallet, Target, AlertCircle, BarChart2 } from 'lucide-react';
@@ -7,6 +8,7 @@ interface DashboardStats {
   totalBalance: number;
   monthlyIncome: number;
   monthlyExpenses: number;
+  monthlyCharges: number;
   activeGoals: number;
   totalAssets: number;
   totalLiabilities: number;
@@ -165,10 +167,12 @@ function MonthlyBarChart({ months }: { months: MonthBar[] }) {
 /* ── Main component ──────────────────────────────────────────────────────── */
 export function Dashboard() {
   const { user } = useAuth();
+  const { fmt } = useUserPrefs();
   const [stats, setStats] = useState<DashboardStats>({
     totalBalance: 0,
     monthlyIncome: 0,
     monthlyExpenses: 0,
+    monthlyCharges: 0,
     activeGoals: 0,
     totalAssets: 0,
     totalLiabilities: 0,
@@ -182,7 +186,16 @@ export function Dashboard() {
 
   const loadDashboardData = useCallback(async () => {
     if (!user) {
-      setStats({ totalBalance: 0, monthlyIncome: 0, monthlyExpenses: 0, activeGoals: 0 });
+      setStats({
+        totalBalance: 0,
+        monthlyIncome: 0,
+        monthlyExpenses: 0,
+        monthlyCharges: 0,
+        activeGoals: 0,
+        totalAssets: 0,
+        totalLiabilities: 0,
+        netWorth: 0,
+      });
       setRecentTransactions([]);
       setLoading(false);
       return;
@@ -195,7 +208,7 @@ export function Dashboard() {
 
     const [accountsRes, transactionsRes, goalsRes, recentRes, trendRes, categoryRes, assetsRes, loansRes] = await Promise.all([
       supabase.from('accounts').select('balance').eq('user_id', user.id).eq('is_active', true),
-      supabase.from('transactions').select('amount, type').eq('user_id', user.id).gte('transaction_date', firstDayOfMonth),
+      supabase.from('transactions').select('amount, type, charge_amount').eq('user_id', user.id).gte('transaction_date', firstDayOfMonth),
       supabase.from('savings_goals').select('id').eq('user_id', user.id).eq('is_completed', false),
       supabase.from('transactions')
         .select('id, title, description, amount, type, transaction_date, categories(name, color)')
@@ -219,6 +232,7 @@ export function Dashboard() {
     const totalBalance = accountsRes.data?.reduce((sum, acc) => sum + Number(acc.balance), 0) || 0;
     const monthlyIncome = transactionsRes.data?.filter((t) => t.type === 'income').reduce((sum, t) => sum + Number(t.amount), 0) || 0;
     const monthlyExpenses = transactionsRes.data?.filter((t) => t.type === 'expense').reduce((sum, t) => sum + Number(t.amount), 0) || 0;
+    const monthlyCharges = transactionsRes.data?.reduce((sum, t) => sum + Number(t.charge_amount ?? 0), 0) || 0;
     const activeGoals = goalsRes.data?.length || 0;
 
     // Net worth formula:
@@ -230,7 +244,7 @@ export function Dashboard() {
     const totalLiabilities = loansRes.data?.filter((l) => l.type === 'borrowing').reduce((s, l) => s + Number(l.current_balance), 0) ?? 0;
     const netWorth = totalAssets - totalLiabilities;
 
-    setStats({ totalBalance, monthlyIncome, monthlyExpenses, activeGoals, totalAssets, totalLiabilities, netWorth });
+    setStats({ totalBalance, monthlyIncome, monthlyExpenses, monthlyCharges, activeGoals, totalAssets, totalLiabilities, netWorth });
     setRecentTransactions(
       (recentRes.data ?? []).map((t) => ({
         id: t.id,
@@ -311,7 +325,7 @@ export function Dashboard() {
     return <div className="px-4 py-4 md:px-8 md:py-8 text-slate-400">Loading...</div>;
   }
 
-  const netIncome = stats.monthlyIncome - stats.monthlyExpenses;
+    const netIncome = stats.monthlyIncome - stats.monthlyExpenses - stats.monthlyCharges;
   const savingsRate = stats.monthlyIncome > 0 ? ((netIncome / stats.monthlyIncome) * 100) : 0;
 
   return (
@@ -461,6 +475,14 @@ export function Dashboard() {
                 <div className="h-full bg-red-500 rounded-full transition-all" style={{ width: `${stats.monthlyIncome + stats.monthlyExpenses > 0 ? Math.min((stats.monthlyExpenses / (stats.monthlyIncome + stats.monthlyExpenses)) * 100, 100) : 0}%` }} />
               </div>
             </div>
+            {stats.monthlyCharges > 0 && (
+              <div className="pt-1">
+                <div className="flex justify-between text-xs">
+                  <span className="text-slate-500">Charges (this month)</span>
+                  <span className="text-slate-300 font-medium">{displayCurrency} {stats.monthlyCharges.toFixed(2)}</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -515,7 +537,7 @@ export function Dashboard() {
                       {t.description || 'Transaction'}
                     </p>
                     <p className="text-[10px] text-slate-500">
-                      {new Date(t.transaction_date).toLocaleDateString()}
+                      {fmt(t.transaction_date)}
                     </p>
                   </div>
                 </div>

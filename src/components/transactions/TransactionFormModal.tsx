@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { X, ArrowRight, UserCheck, Trash2, RefreshCw } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
+import { useUserPrefs } from '../../contexts/UserPrefsContext';
+import { nowInTZ, tzLocalToUTC, utcToLocalInput } from '../../lib/dateUtils';
 import type { Database } from '../../lib/database.types';
 
 type Transaction = Database['public']['Tables']['transactions']['Row'];
@@ -11,30 +13,6 @@ type Tag = Database['public']['Tables']['tags']['Row'];
 type Group = Database['public']['Tables']['transaction_groups']['Row'];
 type Budget = Database['public']['Tables']['budgets']['Row'];
 type Payee = Database['public']['Tables']['payees']['Row'];
-
-function nowForTimeZone(timeZone: string): string {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date());
-
-  const get = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((p) => p.type === type)?.value ?? '';
-
-  const y = get('year');
-  const m = get('month');
-  const d = get('day');
-  const h = get('hour');
-  const min = get('minute');
-
-  // datetime-local expects `YYYY-MM-DDTHH:mm`
-  return `${y}-${m}-${d}T${h}:${min}`;
-}
 
 /* ─── Generic Combobox (search + select) ─────────────────────────────────── */
 type ComboboxItem = { id: string; label: string; meta?: string };
@@ -237,10 +215,8 @@ export function TransactionFormModal({
 }: TransactionFormModalProps) {
   const { user } = useAuth();
 
-  const defaultTimeZone =
-    typeof Intl !== 'undefined'
-      ? Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'UTC'
-      : 'UTC';
+  const { timezone: profileTimezone } = useUserPrefs();
+  const defaultTimeZone = profileTimezone;
 
   /* ── Loaded data ── */
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -258,9 +234,10 @@ export function TransactionFormModal({
     category_id: '',
     title: '',
     amount: '',
+    charge_amount: '',
     type: initialType as 'income' | 'expense' | 'transfer',
     description: '',
-    transaction_date: nowForTimeZone(defaultTimeZone),
+    transaction_date: nowInTZ(defaultTimeZone),
     timezone: defaultTimeZone,
     notes: '',
   }), [initialType, defaultTimeZone]);
@@ -408,11 +385,12 @@ export function TransactionFormModal({
         category_id: '',
         title: fromLeg.title || '',
         amount: fromLeg.amount.toString(),
+        charge_amount: fromLeg.charge_amount != null ? String(fromLeg.charge_amount) : '',
         type: 'transfer',
         description: '',
         transaction_date: fromLeg.transaction_date
-          ? new Date(fromLeg.transaction_date).toISOString().slice(0, 16)
-          : new Date().toISOString().slice(0, 16),
+          ? utcToLocalInput(fromLeg.transaction_date, fromLeg.timezone || defaultTimeZone)
+          : nowInTZ(defaultTimeZone),
         timezone: fromLeg.timezone || defaultTimeZone,
         notes: fromLeg.notes || '',
       });
@@ -431,11 +409,12 @@ export function TransactionFormModal({
         category_id: editingTransaction.category_id || '',
         title: editingTransaction.title || '',
         amount: editingTransaction.amount.toString(),
+        charge_amount: editingTransaction.charge_amount != null ? String(editingTransaction.charge_amount) : '',
         type: editingTransaction.type as 'income' | 'expense' | 'transfer',
         description: editingTransaction.description || '',
         transaction_date: editingTransaction.transaction_date
-          ? new Date(editingTransaction.transaction_date).toISOString().slice(0, 16)
-          : new Date().toISOString().slice(0, 16),
+          ? utcToLocalInput(editingTransaction.transaction_date, editingTransaction.timezone || defaultTimeZone)
+          : nowInTZ(defaultTimeZone),
         timezone: editingTransaction.timezone || defaultTimeZone,
         notes: editingTransaction.notes || '',
       });
@@ -473,7 +452,7 @@ export function TransactionFormModal({
     if (editingTransaction || editingTransfer) return;
     setFormData((prev) => ({
       ...prev,
-      transaction_date: nowForTimeZone(prev.timezone || defaultTimeZone),
+      transaction_date: nowInTZ(prev.timezone || defaultTimeZone),
     }));
   }, [isOpen, editingTransaction, defaultTimeZone]);
 
@@ -540,6 +519,14 @@ export function TransactionFormModal({
     };
 
     const parsedCustomRate = customRate.trim() !== '' ? parseFloat(customRate) : null;
+    const parsedChargeAmount = formData.charge_amount.trim() !== '' ? parseFloat(formData.charge_amount) : null;
+
+    // Convert the datetime-local string from the user's timezone to a proper UTC ISO string.
+    // Without this, Postgres interprets the bare datetime as UTC, causing a day shift.
+    const utcTransactionDate = tzLocalToUTC(
+      formData.transaction_date,
+      formData.timezone || defaultTimeZone,
+    );
 
     if (formData.type === 'transfer') {
       const amount = parseFloat(formData.amount);
@@ -555,10 +542,11 @@ export function TransactionFormModal({
             amount,
             title,
             description: `Account transfer${toAccount ? ` (to ${toAccount.name})` : ''}`,
-            transaction_date: formData.transaction_date,
+            transaction_date: utcTransactionDate,
             timezone: formData.timezone,
             currency: getCurrencyForAccount(formData.account_id),
             custom_rate: parsedCustomRate,
+            charge_amount: parsedChargeAmount,
             tags: selectedTags,
             group_id: groupId || null,
             notes: formData.notes || null,
@@ -568,10 +556,11 @@ export function TransactionFormModal({
             amount,
             title,
             description: `Account transfer${fromAccount ? ` (from ${fromAccount.name})` : ''}`,
-            transaction_date: formData.transaction_date,
+            transaction_date: utcTransactionDate,
             timezone: formData.timezone,
             currency: getCurrencyForAccount(formData.to_account_id),
             custom_rate: parsedCustomRate,
+            charge_amount: parsedChargeAmount,
             tags: selectedTags,
             group_id: groupId || null,
             notes: formData.notes || null,
@@ -594,10 +583,11 @@ export function TransactionFormModal({
             type: 'expense',
             title,
             description: `Account transfer${toAccount ? ` (to ${toAccount.name})` : ''}`,
-            transaction_date: formData.transaction_date,
+            transaction_date: utcTransactionDate,
             timezone: formData.timezone,
             currency: getCurrencyForAccount(formData.account_id),
             custom_rate: parsedCustomRate,
+            charge_amount: parsedChargeAmount,
             transfer_pair_id: transferPairId,
             tags: selectedTags,
             group_id: groupId || null,
@@ -611,10 +601,11 @@ export function TransactionFormModal({
             type: 'income',
             title,
             description: `Account transfer${fromAccount ? ` (from ${fromAccount.name})` : ''}`,
-            transaction_date: formData.transaction_date,
+            transaction_date: utcTransactionDate,
             timezone: formData.timezone,
             currency: getCurrencyForAccount(formData.to_account_id),
             custom_rate: parsedCustomRate,
+            charge_amount: parsedChargeAmount,
             transfer_pair_id: transferPairId,
             tags: selectedTags,
             group_id: groupId || null,
@@ -642,10 +633,11 @@ export function TransactionFormModal({
             type: formData.type === 'income' ? 'income' as const : 'expense' as const,
             title,
             description: s.description || formData.description,
-            transaction_date: formData.transaction_date,
+            transaction_date: utcTransactionDate,
             timezone: formData.timezone,
             currency: getCurrencyForAccount(accountId),
             custom_rate: parsedCustomRate,
+            charge_amount: parsedChargeAmount,
             notes: formData.notes || null,
             tags: selectedTags,
             group_id: groupId || null,
@@ -667,10 +659,11 @@ export function TransactionFormModal({
         type: formData.type,
         title: formData.title,
         description: formData.description,
-        transaction_date: formData.transaction_date,
+        transaction_date: utcTransactionDate,
         timezone: formData.timezone,
         currency: getCurrencyForAccount(formData.account_id),
         custom_rate: parsedCustomRate,
+        charge_amount: parsedChargeAmount,
         notes: formData.notes,
         tags: selectedTags,
         group_id: groupId || null,
@@ -827,6 +820,16 @@ export function TransactionFormModal({
                   onChange={(e) => setFormData((f) => ({ ...f, amount: e.target.value }))}
                   className={inputCls} />
               </div>
+              <div>
+                <label className={labelCls}>
+                  Charge (optional)
+                  <span className="ml-1 text-slate-500 font-normal normal-case">deducted from balance</span>
+                </label>
+                <input type="number" step="0.01" min="0" value={formData.charge_amount}
+                  onChange={(e) => setFormData((f) => ({ ...f, charge_amount: e.target.value }))}
+                  placeholder="0.00"
+                  className={inputCls} />
+              </div>
 
               {/* Exchange rate override — only shown when account currency ≠ default currency */}
               {(() => {
@@ -836,6 +839,9 @@ export function TransactionFormModal({
                 const effectiveRate = customRate.trim() !== '' ? parseFloat(customRate) : liveRate;
                 const convertedAmt = formData.amount && effectiveRate
                   ? (parseFloat(formData.amount) * effectiveRate).toFixed(2)
+                  : null;
+                const convertedCharge = formData.charge_amount && effectiveRate
+                  ? (parseFloat(formData.charge_amount) * effectiveRate).toFixed(2)
                   : null;
                 return (
                   <div className="md:col-span-2">
@@ -904,6 +910,14 @@ export function TransactionFormModal({
                           ) : liveRate != null ? (
                             <span className="ml-1.5 text-emerald-400">(live rate)</span>
                           ) : null}
+                        </p>
+                      )}
+                      {convertedCharge && (
+                        <p className="text-[11px] text-slate-500">
+                          Charge ≈{' '}
+                          <span className="text-slate-300 font-medium">
+                            {displayCurrency} {convertedCharge}
+                          </span>
                         </p>
                       )}
 

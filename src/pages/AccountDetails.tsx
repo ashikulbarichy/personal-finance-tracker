@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { useUserPrefs } from '../contexts/UserPrefsContext';
 import type { Database } from '../lib/database.types';
 import { ArrowLeft } from 'lucide-react';
 
@@ -16,6 +17,7 @@ interface TransactionWithDetails extends Transaction {
 
 export function AccountDetails() {
   const { user } = useAuth();
+  const { fmt } = useUserPrefs();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
@@ -76,7 +78,10 @@ export function AccountDetails() {
 
     let running = 0;
     const history = transactions.map((tx, index) => {
-      const delta = tx.type === 'income' ? Number(tx.amount) : -Number(tx.amount);
+      const charge = Number(tx.charge_amount ?? 0);
+      const delta = tx.type === 'income'
+        ? (Number(tx.amount) - charge)
+        : (-Number(tx.amount) - charge);
       running += delta;
       return { index, value: running };
     });
@@ -281,7 +286,7 @@ export function AccountDetails() {
               {transactions.map((tx) => (
                 <tr key={tx.id} className="hover:bg-slate-800/40">
                   <td className="px-6 py-3 text-sm text-slate-100">
-                    {new Date(tx.transaction_date).toLocaleDateString()}
+                    {fmt(tx.transaction_date)}
                   </td>
                   <td className="px-6 py-3 text-sm text-slate-100">
                     {tx.title || '-'}
@@ -310,9 +315,18 @@ export function AccountDetails() {
                       tx.type === 'income' ? 'text-emerald-400' : 'text-red-400'
                     }`}
                   >
-                    {tx.type === 'income' ? '+' : '-'}
-                    {tx.currency || account.currency}{' '}
-                    {Number(tx.amount).toFixed(2)}
+                    <div className="flex flex-col items-start gap-0.5">
+                      <span>
+                        {tx.type === 'income' ? '+' : '-'}
+                        {tx.currency || account.currency}{' '}
+                        {Number(tx.amount).toFixed(2)}
+                      </span>
+                      {Number(tx.charge_amount ?? 0) > 0 && (
+                        <span className="text-[10px] text-slate-500">
+                          charge {tx.currency || account.currency} {Number(tx.charge_amount).toFixed(2)}
+                        </span>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -333,7 +347,7 @@ export function AccountDetails() {
                     {tx.title || tx.description || 'Transaction'}
                   </p>
                   <p className="text-xs text-slate-500">
-                    {new Date(tx.transaction_date).toLocaleDateString()} ·{' '}
+                    {fmt(tx.transaction_date)} ·{' '}
                     <span className="capitalize">{tx.type}</span>
                   </p>
                 </div>
@@ -342,9 +356,16 @@ export function AccountDetails() {
                     tx.type === 'income' ? 'text-emerald-400' : 'text-red-400'
                   }`}
                 >
-                  {tx.type === 'income' ? '+' : '-'}
-                  {tx.currency || account.currency}{' '}
-                  {Number(tx.amount).toFixed(2)}
+                  <div>
+                    {tx.type === 'income' ? '+' : '-'}
+                    {tx.currency || account.currency}{' '}
+                    {Number(tx.amount).toFixed(2)}
+                  </div>
+                  {Number(tx.charge_amount ?? 0) > 0 && (
+                    <div className="text-[10px] text-slate-500 font-normal">
+                      charge {tx.currency || account.currency} {Number(tx.charge_amount).toFixed(2)}
+                    </div>
+                  )}
                 </div>
               </div>
               {tx.categories && (

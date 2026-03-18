@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { useUserPrefs } from '../contexts/UserPrefsContext';
 import { Calendar, TrendingUp, TrendingDown, Activity, PieChart as PieIcon, BarChart2, UserCheck, Users, Sparkles, AlertTriangle, CheckCircle2, ChevronUp, ChevronDown, Minus, Zap, RefreshCw } from 'lucide-react';
 import type { AIAnalysis } from '../types/aiAnalysis';
 
@@ -452,6 +453,7 @@ function MonthlyCategoryHeatmap({ data, currency }: { data: MonthlyCatData; curr
 /* ── Main component ──────────────────────────────────────────────────────── */
 export function Reports() {
   const { user } = useAuth();
+  const { fmt } = useUserPrefs();
   const [period, setPeriod] = useState('month');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
@@ -1244,7 +1246,7 @@ export function Reports() {
           <h4 className="text-sm font-semibold text-slate-100">Income vs Expenses</h4>
           <div className="flex items-center gap-2 text-[10px] text-slate-500">
             <Calendar size={12} />
-            <span>{startDate && new Date(startDate).toLocaleDateString()} – {endDate && new Date(endDate).toLocaleDateString()}</span>
+            <span>{startDate && fmt(startDate)} – {endDate && fmt(endDate)}</span>
           </div>
         </div>
         <div className="space-y-3">

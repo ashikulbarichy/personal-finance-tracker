@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { useUserPrefs } from '../contexts/UserPrefsContext';
 import {
   Plus, CreditCard as Edit2, Trash2, AlertTriangle, CheckCircle,
   ChevronDown, ChevronRight, Receipt, TrendingUp, TrendingDown, Calendar,
@@ -8,7 +9,7 @@ import {
 import type { Database } from '../lib/database.types';
 
 type Budget = Database['public']['Tables']['budgets']['Row'];
-type Category = Database['public']['Tables']['categories']['Row'];
+type Group = Database['public']['Tables']['transaction_groups']['Row'];
 
 interface BudgetTransaction {
   id: string;
@@ -19,7 +20,7 @@ interface BudgetTransaction {
 }
 
 interface BudgetWithDetails extends Budget {
-  categories: { name: string; color: string } | null;
+  transaction_groups: { name: string; color: string } | null;
   spent: number;
   transactions: BudgetTransaction[];
 }
@@ -87,7 +88,7 @@ function BudgetComparisonChart({
         {budgets.map((b) => {
           const allocated = Number(b.amount);
           const over = b.spent > allocated;
-          const color = b.categories?.color ?? '#3b82f6';
+          const color = b.transaction_groups?.color ?? '#3b82f6';
           const allocPct = (allocated / maxAmount) * 100;
           const spentPct = Math.min((b.spent / maxAmount) * 100, 100);
 
@@ -125,22 +126,24 @@ function BudgetComparisonChart({
 /* ── Main ───────────────────────────────────────────────────────────────────── */
 export function Budgets() {
   const { user } = useAuth();
+  const { fmt } = useUserPrefs();
   const [budgets, setBudgets] = useState<BudgetWithDetails[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
+  const [groups, setGroups] = useState<Group[]>([]);
   const [showForm, setShowForm] = useState(false);
   const [editingBudget, setEditingBudget] = useState<Budget | null>(null);
   const [displayCurrency, setDisplayCurrency] = useState('USD');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     name: '',
-    category_id: '',
+    group_id: '',
     amount: '',
     period: 'monthly' as Budget['period'],
-    start_date: new Date().toISOString().split('T')[0],
+    start_date: '',
     end_date: '',
   });
 
   const calculateEndDate = (startDate: string, period: Budget['period']) => {
+    if (period === 'one_time') return ''; // one-time budgets have no dates
     const date = new Date(startDate);
     switch (period) {
       case 'weekly':    date.setDate(date.getDate() + 7); break;
@@ -155,15 +158,15 @@ export function Budgets() {
   const loadData = useCallback(async () => {
     if (!user) { setBudgets([]); setCategories([]); return; }
 
-    const [budgetsRes, categoriesRes, profileRes] = await Promise.all([
-      supabase.from('budgets').select('*, categories(name, color)').eq('user_id', user.id).order('created_at', { ascending: false }),
-      supabase.from('categories').select('*').eq('user_id', user.id).eq('type', 'expense'),
+    const [budgetsRes, groupsRes, profileRes] = await Promise.all([
+      supabase.from('budgets').select('*, transaction_groups(name, color)').eq('user_id', user.id).order('created_at', { ascending: false }),
+      supabase.from('transaction_groups').select('*').eq('user_id', user.id).order('name'),
       supabase.from('profiles').select('default_currency').eq('id', user.id).single(),
     ]);
 
     if (profileRes.data?.default_currency) setDisplayCurrency(profileRes.data.default_currency);
 
-    if (budgetsRes.data && categoriesRes.data) {
+    if (budgetsRes.data && groupsRes.data) {
       const enriched = await Promise.all(
         budgetsRes.data.map(async (budget) => {
           // Transactions explicitly linked to budget
@@ -175,19 +178,22 @@ export function Budgets() {
             .eq('type', 'expense')
             .order('transaction_date', { ascending: false });
 
-          // Unlinked transactions in the same category + date range
-          const { data: byCategory } = await supabase
-            .from('transactions')
-            .select('id, title, description, amount, transaction_date')
-            .eq('user_id', user.id)
-            .eq('category_id', budget.category_id)
-            .eq('type', 'expense')
-            .is('budget_id', null)
-            .gte('transaction_date', budget.start_date)
-            .lte('transaction_date', budget.end_date)
-            .order('transaction_date', { ascending: false });
+          // For recurring budgets: include unlinked expenses in the same group within the date range.
+          // For one-time budgets (no dates): only include explicitly linked transactions (budget_id = this budget).
+          const byGroupQuery = (budget.period !== 'one_time' && budget.group_id && budget.start_date && budget.end_date)
+            ? await supabase
+                .from('transactions')
+                .select('id, title, description, amount, transaction_date')
+                .eq('user_id', user.id)
+                .eq('group_id', budget.group_id)
+                .eq('type', 'expense')
+                .is('budget_id', null)
+                .gte('transaction_date', budget.start_date)
+                .lte('transaction_date', budget.end_date)
+                .order('transaction_date', { ascending: false })
+            : { data: [] };
 
-          const txList = [...(byBudgetId ?? []), ...(byCategory ?? [])];
+          const txList = [...(byBudgetId ?? []), ...(byGroupQuery.data ?? [])];
           const spent = txList.reduce((s, t) => s + Number(t.amount), 0);
 
           return {
@@ -198,7 +204,7 @@ export function Budgets() {
         })
       );
       setBudgets(enriched as BudgetWithDetails[]);
-      setCategories(categoriesRes.data);
+      setGroups(groupsRes.data);
     }
   }, [user]);
 
@@ -211,11 +217,13 @@ export function Budgets() {
     const budgetData = {
       user_id: user.id,
       name: formData.name,
-      category_id: formData.category_id,
+      group_id: formData.group_id || null,
       amount: parseFloat(formData.amount),
       period: formData.period,
-      start_date: formData.start_date,
-      end_date: formData.end_date || calculateEndDate(formData.start_date, formData.period),
+      start_date: formData.period === 'one_time' ? null : (formData.start_date || null),
+      end_date: formData.period === 'one_time'
+        ? null
+        : (formData.end_date || calculateEndDate(formData.start_date, formData.period) || null),
     };
 
     if (editingBudget) {
@@ -232,17 +240,17 @@ export function Budgets() {
 
   const resetForm = () => {
     setFormData({
-      name: '', category_id: '', amount: '', period: 'monthly',
-      start_date: new Date().toISOString().split('T')[0], end_date: '',
+      name: '', group_id: '', amount: '', period: 'monthly',
+      start_date: '', end_date: '',
     });
   };
 
   const handleEdit = (budget: Budget) => {
     setEditingBudget(budget);
     setFormData({
-      name: budget.name, category_id: budget.category_id,
+      name: budget.name, group_id: budget.group_id ?? '',
       amount: budget.amount.toString(), period: budget.period,
-      start_date: budget.start_date, end_date: budget.end_date,
+      start_date: budget.start_date ?? '', end_date: budget.end_date ?? '',
     });
     setShowForm(true);
   };
@@ -376,12 +384,16 @@ export function Budgets() {
                   placeholder="e.g. Monthly Groceries" className={inputCls} />
               </div>
               <div>
-                <label className={labelCls}>Category *</label>
-                <select required value={formData.category_id}
-                  onChange={(e) => setFormData({ ...formData, category_id: e.target.value })}
+                <label className={labelCls}>Group</label>
+                <select value={formData.group_id}
+                  onChange={(e) => setFormData({ ...formData, group_id: e.target.value })}
                   className={inputCls}>
-                  <option value="">Select expense category</option>
-                  {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  <option value="">No group (track all expenses)</option>
+                  {groups.map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name}
+                    </option>
+                  ))}
                 </select>
               </div>
               <div>
@@ -396,6 +408,7 @@ export function Budgets() {
                   onChange={(e) => setFormData({
                     ...formData,
                     period: e.target.value as Budget['period'],
+                    start_date: (e.target.value as Budget['period']) === 'one_time' ? '' : formData.start_date,
                     end_date: calculateEndDate(formData.start_date, e.target.value as Budget['period']),
                   })}
                   className={inputCls}>
@@ -403,23 +416,28 @@ export function Budgets() {
                   <option value="monthly">Monthly</option>
                   <option value="quarterly">Quarterly</option>
                   <option value="annual">Annual</option>
+                  <option value="one_time">One-time</option>
                 </select>
               </div>
-              <div>
-                <label className={labelCls}>Start Date *</label>
-                <input required type="date" value={formData.start_date}
-                  onChange={(e) => setFormData({
-                    ...formData, start_date: e.target.value,
-                    end_date: calculateEndDate(e.target.value, formData.period),
-                  })}
-                  className={inputCls} />
-              </div>
-              <div>
-                <label className={labelCls}>End Date *</label>
-                <input required type="date" value={formData.end_date}
-                  onChange={(e) => setFormData({ ...formData, end_date: e.target.value })}
-                  className={inputCls} />
-              </div>
+              {formData.period !== 'one_time' && (
+                <>
+                  <div>
+                    <label className={labelCls}>Start Date *</label>
+                    <input required type="date" value={formData.start_date}
+                      onChange={(e) => setFormData({
+                        ...formData, start_date: e.target.value,
+                        end_date: calculateEndDate(e.target.value, formData.period),
+                      })}
+                      className={inputCls} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>End Date *</label>
+                    <input required type="date" value={formData.end_date}
+                      onChange={(e) => setFormData({ ...formData, end_date: e.target.value })}
+                      className={inputCls} />
+                  </div>
+                </>
+              )}
             </div>
             <div className="flex gap-3">
               <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.97] text-white text-sm font-semibold rounded-xl shadow-md shadow-blue-950/40 transition-all">
@@ -441,19 +459,26 @@ export function Budgets() {
           const pct = allocated > 0 ? (budget.spent / allocated) * 100 : 0;
           const over = budget.spent > allocated;
           const near = pct >= 80 && !over;
-          const color = budget.categories?.color ?? '#3b82f6';
+          const color = budget.transaction_groups?.color ?? '#3b82f6';
           const isExpanded = expandedId === budget.id;
 
-          // Days info
+          // Days info (only meaningful for date-ranged budgets)
           const today = new Date();
-          const start = new Date(budget.start_date);
-          const end = new Date(budget.end_date);
-          const totalDays = Math.max(Math.ceil((end.getTime() - start.getTime()) / 86400000), 1);
-          const daysElapsed = Math.max(Math.ceil((today.getTime() - start.getTime()) / 86400000), 0);
-          const daysLeft = Math.max(Math.ceil((end.getTime() - today.getTime()) / 86400000), 0);
-          const dailyBudget = allocated / totalDays;
-          const dailyActual = daysElapsed > 0 ? budget.spent / daysElapsed : 0;
-          const projectedTotal = dailyActual * totalDays;
+          const hasDates = budget.period !== 'one_time' && !!budget.start_date && !!budget.end_date;
+          const start = hasDates ? new Date(budget.start_date as string) : null;
+          const end = hasDates ? new Date(budget.end_date as string) : null;
+          const totalDays = hasDates && start && end
+            ? Math.max(Math.ceil((end.getTime() - start.getTime()) / 86400000), 1)
+            : 0;
+          const daysElapsed = hasDates && start
+            ? Math.max(Math.ceil((today.getTime() - start.getTime()) / 86400000), 0)
+            : 0;
+          const daysLeft = hasDates && end
+            ? Math.max(Math.ceil((end.getTime() - today.getTime()) / 86400000), 0)
+            : 0;
+          const dailyBudget = hasDates && totalDays > 0 ? allocated / totalDays : 0;
+          const dailyActual = hasDates && daysElapsed > 0 ? budget.spent / daysElapsed : 0;
+          const projectedTotal = hasDates && totalDays > 0 ? dailyActual * totalDays : 0;
 
           return (
             <div key={budget.id}
@@ -466,17 +491,19 @@ export function Budgets() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <h4 className="font-semibold text-slate-100">{budget.name}</h4>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 capitalize">{budget.period}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700 capitalize">
+                        {budget.period === 'one_time' ? 'One-time' : budget.period}
+                      </span>
                       {over && (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-500/15 text-red-400 border border-red-500/30 font-semibold flex items-center gap-1">
                           <AlertTriangle size={9} /> Over budget
                         </span>
                       )}
                     </div>
-                    {budget.categories && (
+                    {budget.transaction_groups && (
                       <span className="inline-flex items-center gap-1 mt-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium"
                         style={{ backgroundColor: `${color}20`, color }}>
-                        {budget.categories.name}
+                        {budget.transaction_groups.name}
                       </span>
                     )}
                   </div>
@@ -502,37 +529,43 @@ export function Budgets() {
                   color={color}
                 />
 
-                {/* Stats row */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
-                  <div className="bg-slate-800/50 rounded-lg p-3">
-                    <p className="text-[10px] text-slate-500 mb-0.5">Daily Budget</p>
-                    <p className="text-sm font-semibold text-slate-200">{displayCurrency} {dailyBudget.toFixed(2)}</p>
-                  </div>
-                  <div className={`rounded-lg p-3 ${dailyActual > dailyBudget ? 'bg-red-500/10' : 'bg-slate-800/50'}`}>
-                    <p className="text-[10px] text-slate-500 mb-0.5">Daily Actual</p>
-                    <p className={`text-sm font-semibold ${dailyActual > dailyBudget ? 'text-red-400' : 'text-slate-200'}`}>
-                      {displayCurrency} {dailyActual.toFixed(2)}
-                    </p>
-                  </div>
-                  <div className="bg-slate-800/50 rounded-lg p-3 flex items-center gap-2">
-                    <Calendar size={13} className="text-slate-500 shrink-0" />
-                    <div>
-                      <p className="text-[10px] text-slate-500">Days Left</p>
-                      <p className="text-sm font-semibold text-slate-200">{daysLeft > 0 ? daysLeft : 'Ended'}</p>
+                {/* Stats row (date-ranged budgets only) */}
+                {hasDates && (
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
+                    <div className="bg-slate-800/50 rounded-lg p-3">
+                      <p className="text-[10px] text-slate-500 mb-0.5">Daily Budget</p>
+                      <p className="text-sm font-semibold text-slate-200">{displayCurrency} {dailyBudget.toFixed(2)}</p>
+                    </div>
+                    <div className={`rounded-lg p-3 ${dailyActual > dailyBudget ? 'bg-red-500/10' : 'bg-slate-800/50'}`}>
+                      <p className="text-[10px] text-slate-500 mb-0.5">Daily Actual</p>
+                      <p className={`text-sm font-semibold ${dailyActual > dailyBudget ? 'text-red-400' : 'text-slate-200'}`}>
+                        {displayCurrency} {dailyActual.toFixed(2)}
+                      </p>
+                    </div>
+                    <div className="bg-slate-800/50 rounded-lg p-3 flex items-center gap-2">
+                      <Calendar size={13} className="text-slate-500 shrink-0" />
+                      <div>
+                        <p className="text-[10px] text-slate-500">Days Left</p>
+                        <p className="text-sm font-semibold text-slate-200">{daysLeft > 0 ? daysLeft : 'Ended'}</p>
+                      </div>
+                    </div>
+                    <div className={`rounded-lg p-3 ${projectedTotal > allocated ? 'bg-amber-500/10' : 'bg-slate-800/50'}`}>
+                      <p className="text-[10px] text-slate-500 mb-0.5">Projected Total</p>
+                      <p className={`text-sm font-semibold ${projectedTotal > allocated ? 'text-amber-400' : 'text-emerald-400'}`}>
+                        {displayCurrency} {projectedTotal.toFixed(2)}
+                      </p>
                     </div>
                   </div>
-                  <div className={`rounded-lg p-3 ${projectedTotal > allocated ? 'bg-amber-500/10' : 'bg-slate-800/50'}`}>
-                    <p className="text-[10px] text-slate-500 mb-0.5">Projected Total</p>
-                    <p className={`text-sm font-semibold ${projectedTotal > allocated ? 'text-amber-400' : 'text-emerald-400'}`}>
-                      {displayCurrency} {projectedTotal.toFixed(2)}
-                    </p>
-                  </div>
-                </div>
+                )}
 
                 {/* Date range + transaction count */}
                 <div className="flex items-center justify-between mt-3">
                   <p className="text-xs text-slate-600">
-                    {new Date(budget.start_date).toLocaleDateString()} – {new Date(budget.end_date).toLocaleDateString()}
+                    {hasDates ? (
+                      <>{fmt(budget.start_date)} – {fmt(budget.end_date)}</>
+                    ) : (
+                      <span className="text-slate-500">No date range</span>
+                    )}
                   </p>
                   {budget.transactions.length > 0 && (
                     <button
@@ -559,7 +592,7 @@ export function Budgets() {
                         className="flex items-center justify-between py-2 border-b border-slate-800/60 last:border-0">
                         <div className="min-w-0">
                           <p className="text-sm text-slate-200 truncate">{tx.title || tx.description || 'Transaction'}</p>
-                          <p className="text-[10px] text-slate-500">{new Date(tx.transaction_date).toLocaleDateString()}</p>
+                          <p className="text-[10px] text-slate-500">{fmt(tx.transaction_date)}</p>
                         </div>
                         <span className="text-sm font-semibold text-red-400 shrink-0 ml-3">
                           -{displayCurrency} {Number(tx.amount).toFixed(2)}

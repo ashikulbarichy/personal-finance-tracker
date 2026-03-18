@@ -25,9 +25,11 @@ import { ProfilePage } from './pages/Profile';
 import { Preferences } from './pages/Preferences';
 import { Currencies } from './pages/Currencies';
 import { ExchangeRates } from './pages/ExchangeRates';
+import { Tax } from './pages/Tax';
 import { Login } from './components/auth/Login';
 import { Register } from './components/auth/Register';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { UserPrefsProvider } from './contexts/UserPrefsContext';
 import { useState } from 'react';
 
 function AppLoadingScreen() {
@@ -72,6 +74,7 @@ const PAGE_TITLES: Record<string, string> = {
   '/budgets': 'Budgets',
   '/goals': 'Savings Goals',
   '/subscriptions': 'Subscriptions',
+  '/tax': 'Tax',
   // Transaction Management
   '/transactions': 'Transactions',
   '/expenses': 'Expenses',
@@ -128,6 +131,7 @@ function IndexRoute() {
 function App() {
   return (
     <AuthProvider>
+      <UserPrefsProvider>
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<IndexRoute />} />
@@ -144,6 +148,7 @@ function App() {
               <Route path="/budgets" element={<Budgets />} />
               <Route path="/goals" element={<SavingsGoals />} />
               <Route path="/subscriptions" element={<Subscriptions />} />
+              <Route path="/tax" element={<Tax />} />
 
               {/* Transaction Management */}
               <Route path="/transactions" element={<Transactions />} />
@@ -180,6 +185,7 @@ function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
+      </UserPrefsProvider>
     </AuthProvider>
   );
 }

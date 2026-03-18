@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useUserPrefs } from '../contexts/UserPrefsContext';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { Plus, CreditCard as Edit2, Trash2, Search, ArrowRight, UserCheck, ArrowLeftRight } from 'lucide-react';
@@ -34,6 +35,7 @@ type DisplayRow = TransferPair | SingleTx;
 
 export function Transactions() {
   const { user } = useAuth();
+  const { fmt } = useUserPrefs();
   const [transactions, setTransactions] = useState<TransactionWithDetails[]>([]);
   const [displayRows, setDisplayRows] = useState<DisplayRow[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -211,6 +213,7 @@ export function Transactions() {
   const nonTransferTx = transactions.filter((t) => !t.transfer_pair_id);
   const totalIncome   = nonTransferTx.filter((t) => t.type === 'income').reduce((s, t) => s + Number(t.amount), 0);
   const totalExpenses = nonTransferTx.filter((t) => t.type === 'expense').reduce((s, t) => s + Number(t.amount), 0);
+  const totalCharges  = nonTransferTx.reduce((s, t) => s + Number(t.charge_amount ?? 0), 0);
 
   void accounts; void categories; void payees;
 
@@ -220,6 +223,11 @@ export function Transactions() {
       <span className={`font-semibold ${t.type === 'income' ? 'text-emerald-400' : 'text-red-400'}`}>
         {t.type === 'income' ? '+' : '-'}{t.currency} {Number(t.amount).toFixed(2)}
       </span>
+      {Number(t.charge_amount ?? 0) > 0 && (
+        <span className="text-[10px] text-slate-500 leading-tight">
+          charge {t.currency} {Number(t.charge_amount).toFixed(2)}
+        </span>
+      )}
       {t.custom_rate != null && (
         <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 leading-tight">
           rate {t.custom_rate}
@@ -254,6 +262,9 @@ export function Transactions() {
           <p className={`text-2xl font-bold ${totalIncome - totalExpenses >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
             {displayCurrency} {(totalIncome - totalExpenses).toFixed(2)}
           </p>
+          {totalCharges > 0 && (
+            <p className="text-xs text-slate-500 mt-1">Charges: {displayCurrency} {totalCharges.toFixed(2)}</p>
+          )}
         </div>
       </div>
 
@@ -308,7 +319,7 @@ export function Transactions() {
                   return (
                     <tr key={row.id} className="hover:bg-slate-800/30 bg-cyan-950/10">
                       <td className="px-5 py-3 text-sm text-slate-400">
-                        {new Date(fromLeg.transaction_date).toLocaleDateString()}
+                        {fmt(fromLeg.transaction_date)}
                       </td>
                       <td className="px-5 py-3 text-sm">
                         <div className="flex items-center gap-2">
@@ -331,6 +342,11 @@ export function Transactions() {
                           <span className="font-semibold text-cyan-400">
                             {fromLeg.currency} {Number(fromLeg.amount).toFixed(2)}
                           </span>
+                          {Number(fromLeg.charge_amount ?? 0) > 0 && (
+                            <span className="text-[10px] text-slate-500 leading-tight">
+                              charge {fromLeg.currency} {Number(fromLeg.charge_amount).toFixed(2)}
+                            </span>
+                          )}
                           {fromLeg.custom_rate != null && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 leading-tight">
                               rate {fromLeg.custom_rate}
@@ -351,7 +367,7 @@ export function Transactions() {
                 const t = row.data;
                 return (
                   <tr key={t.id} className="hover:bg-slate-800/30">
-                    <td className="px-5 py-3 text-sm text-slate-400">{new Date(t.transaction_date).toLocaleDateString()}</td>
+                    <td className="px-5 py-3 text-sm text-slate-400">{fmt(t.transaction_date)}</td>
                     <td className="px-5 py-3 text-sm text-slate-100">{t.title || t.description || '—'}</td>
                     <td className="px-5 py-3 text-sm">
                       <div className="flex items-center gap-1.5 text-slate-400">
@@ -413,7 +429,7 @@ export function Transactions() {
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5 mt-1 text-xs text-slate-500">
-                      <span>{new Date(fromLeg.transaction_date).toLocaleDateString()}</span>
+                      <span>{fmt(fromLeg.transaction_date)}</span>
                       <span>·</span>
                       <span>{fromLeg.accounts?.name ?? '—'}</span>
                       <ArrowLeftRight size={10} className="text-cyan-500 shrink-0" />
@@ -446,7 +462,7 @@ export function Transactions() {
                     </div>
                   </div>
                   <div className="flex items-center gap-1.5 mt-0.5 text-xs text-slate-500">
-                    <span>{new Date(t.transaction_date).toLocaleDateString()}</span>
+                    <span>{fmt(t.transaction_date)}</span>
                     <span>·</span>
                     <span>{t.accounts?.name ?? '—'}</span>
                     {t.payees && (

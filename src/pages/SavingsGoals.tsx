@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { useUserPrefs } from '../contexts/UserPrefsContext';
 import { Plus, CreditCard as Edit2, Trash2, TrendingUp } from 'lucide-react';
 import type { Database } from '../lib/database.types';
 
@@ -28,6 +29,7 @@ function suggestTimeline(deadline: string): GoalTimeline {
 
 export function SavingsGoals() {
   const { user } = useAuth();
+  const { fmt } = useUserPrefs();
   const [goals, setGoals] = useState<SavingsGoal[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [allocations, setAllocations] = useState<SavingsAllocation[]>([]);
@@ -463,7 +465,7 @@ export function SavingsGoals() {
                   </div>
                   {goal.deadline && (
                     <p className="text-xs text-slate-500 mt-1">
-                      Due: {new Date(goal.deadline).toLocaleDateString()}
+                      Due: {fmt(goal.deadline)}
                     </p>
                   )}
                 </div>

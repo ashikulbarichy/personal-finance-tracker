@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { useUserPrefs } from '../contexts/UserPrefsContext';
 import type { Database } from '../lib/database.types';
 import { ArrowLeft } from 'lucide-react';
 
@@ -11,6 +12,7 @@ type LoanPayment = Database['public']['Tables']['loan_payments']['Row'];
 
 export function LoanDetails() {
   const { user } = useAuth();
+  const { fmt } = useUserPrefs();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
 
@@ -142,7 +144,7 @@ export function LoanDetails() {
             {loan.due_date && (
               <p>
                 <span className="font-medium">Due date:</span>{' '}
-                {new Date(loan.due_date).toLocaleDateString()}
+                {fmt(loan.due_date)}
               </p>
             )}
           </div>
@@ -232,7 +234,7 @@ export function LoanDetails() {
                       </span>
                     </div>
                     <p className="text-xs text-slate-500">
-                      {new Date(p.payment_date).toLocaleDateString()}
+                      {fmt(p.payment_date)}
                       {fromAcc || toAcc ? ' · ' : ''}
                       {fromAcc && `From ${fromAcc.name}`}
                       {fromAcc && toAcc && ' → '}

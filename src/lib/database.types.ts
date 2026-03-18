@@ -17,6 +17,9 @@ export type Database = {
           profession: string | null
           default_currency: string | null
           enabled_currencies: string[] | null
+          timezone: string
+          date_format: string
+          country_code: string | null
           created_at: string
           updated_at: string
         }
@@ -27,6 +30,9 @@ export type Database = {
           profession?: string | null
           default_currency?: string | null
           enabled_currencies?: string[] | null
+          timezone?: string
+          date_format?: string
+          country_code?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -37,6 +43,9 @@ export type Database = {
           profession?: string | null
           default_currency?: string | null
           enabled_currencies?: string[] | null
+          timezone?: string
+          date_format?: string
+          country_code?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -197,6 +206,9 @@ export type Database = {
           currency: string
           custom_rate: number | null
           transfer_pair_id: string | null
+          charge_amount: number | null
+          tax_country_code: string | null
+          tax_status: string | null
           title: string
           description: string | null
           transaction_date: string
@@ -221,6 +233,9 @@ export type Database = {
           currency?: string
           custom_rate?: number | null
           transfer_pair_id?: string | null
+          charge_amount?: number | null
+          tax_country_code?: string | null
+          tax_status?: string | null
           title?: string
           description?: string | null
           transaction_date?: string
@@ -245,6 +260,9 @@ export type Database = {
           currency?: string
           custom_rate?: number | null
           transfer_pair_id?: string | null
+          charge_amount?: number | null
+          tax_country_code?: string | null
+          tax_status?: string | null
           title?: string
           description?: string | null
           transaction_date?: string
@@ -297,12 +315,12 @@ export type Database = {
         Row: {
           id: string
           user_id: string
-          category_id: string
+          group_id: string | null
           name: string
           amount: number
-          period: 'weekly' | 'monthly' | 'quarterly' | 'annual'
-          start_date: string
-          end_date: string
+          period: 'weekly' | 'monthly' | 'quarterly' | 'annual' | 'one_time'
+          start_date: string | null
+          end_date: string | null
           rollover: boolean
           created_at: string
           updated_at: string
@@ -310,12 +328,12 @@ export type Database = {
         Insert: {
           id?: string
           user_id: string
-          category_id: string
+          group_id?: string | null
           name: string
           amount: number
-          period: 'weekly' | 'monthly' | 'quarterly' | 'annual'
-          start_date: string
-          end_date: string
+          period: 'weekly' | 'monthly' | 'quarterly' | 'annual' | 'one_time'
+          start_date?: string | null
+          end_date?: string | null
           rollover?: boolean
           created_at?: string
           updated_at?: string
@@ -323,22 +341,22 @@ export type Database = {
         Update: {
           id?: string
           user_id?: string
-          category_id?: string
+          group_id?: string | null
           name?: string
           amount?: number
-          period?: 'weekly' | 'monthly' | 'quarterly' | 'annual'
-          start_date?: string
-          end_date?: string
+          period?: 'weekly' | 'monthly' | 'quarterly' | 'annual' | 'one_time'
+          start_date?: string | null
+          end_date?: string | null
           rollover?: boolean
           created_at?: string
           updated_at?: string
         }
         Relationships: [
           {
-            foreignKeyName: 'budgets_category_id_fkey'
-            columns: ['category_id']
+            foreignKeyName: 'budgets_group_id_fkey'
+            columns: ['group_id']
             isOneToOne: false
-            referencedRelation: 'categories'
+            referencedRelation: 'transaction_groups'
             referencedColumns: ['id']
           },
         ]
@@ -809,6 +827,44 @@ export type Database = {
           created_at?: string
         }
         Relationships: []
+      }
+      user_tax_residency_periods: {
+        Row: {
+          id: string
+          user_id: string
+          country_code: string
+          start_date: string
+          end_date: string | null
+          tax_status: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          country_code: string
+          start_date: string
+          end_date?: string | null
+          tax_status?: string | null
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          country_code?: string
+          start_date?: string
+          end_date?: string | null
+          tax_status?: string | null
+          created_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'user_tax_residency_periods_user_id_fkey'
+            columns: ['user_id']
+            isOneToOne: false
+            referencedRelation: 'profiles'
+            referencedColumns: ['id']
+          },
+        ]
       }
       exchange_rates: {
         Row: {

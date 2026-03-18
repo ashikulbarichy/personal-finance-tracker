@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { useUserPrefs } from '../contexts/UserPrefsContext';
 import { Plus, CreditCard as Edit2, Trash2, DollarSign } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import type { Database } from '../lib/database.types';
@@ -15,6 +16,7 @@ interface LoanWithAccount extends Loan {
 
 export function Loans() {
   const { user } = useAuth();
+  const { fmt } = useUserPrefs();
   const navigate = useNavigate();
   const [loans, setLoans] = useState<LoanWithAccount[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -601,7 +603,7 @@ export function Loans() {
                           </p>
                           {loan.due_date && (
                             <p className="text-xs text-slate-500 mt-1">
-                              Due: {new Date(loan.due_date).toLocaleDateString()}
+                              Due: {fmt(loan.due_date)}
                             </p>
                           )}
                         </div>
@@ -715,7 +717,7 @@ export function Loans() {
                                         </span>
                                       </div>
                                       <p className="text-[11px] text-slate-500">
-                                        {new Date(p.payment_date).toLocaleDateString()}
+                                        {fmt(p.payment_date)}
                                         {fromAcc || toAcc ? ' · ' : ''}
                                         {fromAcc && `From ${fromAcc.name}`}
                                         {fromAcc && toAcc && ' → '}

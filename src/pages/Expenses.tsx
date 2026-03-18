@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { useUserPrefs } from '../contexts/UserPrefsContext';
 import { TrendingDown, Search } from 'lucide-react';
 
 interface TxRow {
@@ -35,6 +36,7 @@ function MiniBarChart({ bars }: { bars: MonthBar[] }) {
 
 export function Expenses() {
   const { user } = useAuth();
+  const { fmt } = useUserPrefs();
   const [rows, setRows] = useState<TxRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -162,7 +164,7 @@ export function Expenses() {
             <tbody className="divide-y divide-slate-800">
               {filtered.map((t) => (
                 <tr key={t.id} className="hover:bg-slate-800/30">
-                  <td className="px-5 py-3 text-sm text-slate-400">{new Date(t.transaction_date).toLocaleDateString()}</td>
+                  <td className="px-5 py-3 text-sm text-slate-400">{fmt(t.transaction_date)}</td>
                   <td className="px-5 py-3 text-sm text-slate-100">{t.title || t.description || '—'}</td>
                   <td className="px-5 py-3 text-sm text-slate-400">{t.accounts?.name ?? '—'}</td>
                   <td className="px-5 py-3 text-sm">
@@ -174,7 +176,12 @@ export function Expenses() {
                     ) : <span className="text-slate-600">—</span>}
                   </td>
                   <td className="px-5 py-3 text-sm font-semibold text-rose-400">
-                    -{currency} {t.amount.toFixed(2)}
+                    <div className="flex flex-col items-start gap-0.5">
+                      <span>-{currency} {t.amount.toFixed(2)}</span>
+                      {Number(t.charge_amount ?? 0) > 0 && (
+                        <span className="text-[10px] text-slate-500">charge {currency} {Number(t.charge_amount).toFixed(2)}</span>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -190,7 +197,7 @@ export function Expenses() {
             <div key={t.id} className="px-4 py-3 flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <p className="text-sm font-medium text-slate-100 truncate">{t.title || t.description || '—'}</p>
-                <p className="text-xs text-slate-500 mt-0.5">{new Date(t.transaction_date).toLocaleDateString()} · {t.accounts?.name ?? '—'}</p>
+                <p className="text-xs text-slate-500 mt-0.5">{fmt(t.transaction_date)} · {t.accounts?.name ?? '—'}</p>
                 {t.categories && (
                   <span className="inline-block mt-1 px-2 py-0.5 rounded text-[11px] font-medium"
                     style={{ backgroundColor: `${t.categories.color}22`, color: t.categories.color }}>
@@ -198,7 +205,12 @@ export function Expenses() {
                   </span>
                 )}
               </div>
-              <span className="text-sm font-semibold text-rose-400 shrink-0">-{currency} {t.amount.toFixed(2)}</span>
+              <div className="text-right shrink-0">
+                <div className="text-sm font-semibold text-rose-400">-{currency} {t.amount.toFixed(2)}</div>
+                {Number(t.charge_amount ?? 0) > 0 && (
+                  <div className="text-[10px] text-slate-500">charge {currency} {Number(t.charge_amount).toFixed(2)}</div>
+                )}
+              </div>
             </div>
           ))}
           {filtered.length === 0 && (

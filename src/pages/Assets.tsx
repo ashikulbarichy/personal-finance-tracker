@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { useUserPrefs } from '../contexts/UserPrefsContext';
 import { Plus, Trash2, Package, Edit2, TrendingUp, TrendingDown } from 'lucide-react';
 
 interface Asset {
@@ -39,6 +40,7 @@ const emptyForm = {
 
 export function Assets() {
   const { user } = useAuth();
+  const { fmt } = useUserPrefs();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -273,7 +275,7 @@ export function Assets() {
                   <p className="text-[10px] text-slate-600 mt-1">📍 {a.location}</p>
                 )}
                 {a.purchase_date && (
-                  <p className="text-[10px] text-slate-600">Purchased {new Date(a.purchase_date).toLocaleDateString()}</p>
+                  <p className="text-[10px] text-slate-600">Purchased {fmt(a.purchase_date)}</p>
                 )}
               </div>
             </div>

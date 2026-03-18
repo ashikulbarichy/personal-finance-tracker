@@ -55,6 +55,7 @@ const NAV_GROUPS: NavGroup[] = [
       { path: '/budgets', label: 'Budgets', icon: Receipt },
       { path: '/goals', label: 'Goals', icon: Target },
       { path: '/subscriptions', label: 'Subscriptions', icon: RefreshCw },
+      { path: '/tax', label: 'Tax', icon: DollarSign },
     ],
   },
   {

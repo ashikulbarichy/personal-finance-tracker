@@ -11,6 +11,8 @@ interface Payee {
   category: string | null;
   notes: string | null;
   total_paid: number;
+  // computed on load from transactions (income where this payee is the payer)
+  total_received?: number;
   created_at: string;
 }
 
@@ -38,12 +40,31 @@ export function Payees() {
   const load = useCallback(async () => {
     if (!user) { setPayees([]); setLoading(false); return; }
 
-    const [payeesRes, profRes] = await Promise.all([
+    const [payeesRes, profRes, incomeRes] = await Promise.all([
       supabase.from('payees').select('*').eq('user_id', user.id).order('total_paid', { ascending: false }),
       supabase.from('profiles').select('default_currency').eq('id', user.id).single(),
+      supabase
+        .from('transactions')
+        .select('payer_id, amount')
+        .eq('user_id', user.id)
+        .eq('type', 'income')
+        .not('payer_id', 'is', null),
     ]);
 
-    setPayees((payeesRes.data ?? []) as Payee[]);
+    // Build map of total received amounts per payer (this represents money we received from them)
+    const receivedMap: Record<string, number> = {};
+    (incomeRes.data ?? []).forEach((t: { payer_id: string | null; amount: number }) => {
+      if (!t.payer_id) return;
+      receivedMap[t.payer_id] = (receivedMap[t.payer_id] ?? 0) + Number(t.amount);
+    });
+
+    const basePayees = (payeesRes.data ?? []) as Payee[];
+    const enriched = basePayees.map((p) => ({
+      ...p,
+      total_received: receivedMap[p.id] ?? 0,
+    }));
+
+    setPayees(enriched);
     setCurrency(profRes.data?.default_currency ?? 'USD');
     setLoading(false);
   }, [user]);
@@ -95,6 +116,7 @@ export function Payees() {
   );
 
   const totalPaid = payees.reduce((s, p) => s + Number(p.total_paid), 0);
+  const totalReceived = payees.reduce((s, p) => s + Number(p.total_received ?? 0), 0);
 
   if (loading) return <div className="px-8 py-8 text-slate-400">Loading…</div>;
 
@@ -116,6 +138,11 @@ export function Payees() {
           <p className="text-xs text-slate-400 mb-1">Total Paid Out</p>
           <p className="text-xl font-bold text-slate-100">{currency} {totalPaid.toFixed(2)}</p>
           <p className="text-xs text-slate-500 mt-1">across all payees</p>
+        </div>
+        <div className="bg-[#141927] p-5 rounded-xl border border-slate-800">
+          <p className="text-xs text-slate-400 mb-1">Total Received</p>
+          <p className="text-xl font-bold text-emerald-400">{currency} {totalReceived.toFixed(2)}</p>
+          <p className="text-xs text-slate-500 mt-1">from all payers</p>
         </div>
         <div className="bg-[#141927] p-5 rounded-xl border border-slate-800">
           <p className="text-xs text-slate-400 mb-2">By Category</p>
@@ -231,8 +258,14 @@ export function Payees() {
                   </div>
                   <div className="flex items-center gap-4 shrink-0">
                     <div className="text-right">
-                      <p className="text-sm font-bold text-slate-100">{currency} {Number(p.total_paid).toFixed(2)}</p>
+                      <p className="text-sm font-bold text-slate-100">
+                        {currency} {Number(p.total_paid).toFixed(2)}
+                      </p>
                       <p className="text-[10px] text-slate-500">total paid</p>
+                      <p className="text-sm font-bold text-emerald-400 mt-1">
+                        {currency} {Number(p.total_received ?? 0).toFixed(2)}
+                      </p>
+                      <p className="text-[10px] text-slate-500">total received</p>
                     </div>
                     <div className="flex items-center gap-1">
                       <button onClick={() => handleEdit(p)} className="p-1.5 text-slate-600 hover:text-blue-400 hover:bg-blue-400/10 rounded-lg transition-colors"><Edit2 size={14} /></button>

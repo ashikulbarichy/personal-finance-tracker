@@ -155,30 +155,17 @@ Respond ONLY with a valid JSON object matching this exact schema (no markdown, n
 }`;
 }
 
-/* ── Main handler ───────────────────────────────────────────────────────── */
-Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
-  if (req.method !== 'POST') return json(405, { error: 'Method not allowed' });
+/* ── Try a Gemini model, return parsed AIAnalysis or null on failure ─────── */
+async function tryModel(
+  model: string,
+  prompt: string,
+  apiKey: string,
+): Promise<{ analysis: AIAnalysis; modelUsed: string } | { error: string; status: number }> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
 
-  const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
-  if (!GEMINI_API_KEY) {
-    return json(500, { error: 'GEMINI_API_KEY secret is not set. Add it in the Supabase Dashboard → Edge Functions → Secrets.' });
-  }
-
-  let snapshot: FinancialSnapshot;
+  let resp: Response;
   try {
-    snapshot = await req.json() as FinancialSnapshot;
-  } catch {
-    return json(400, { error: 'Invalid request body' });
-  }
-
-  const prompt = buildPrompt(snapshot);
-
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
-
-  let geminiResp: Response;
-  try {
-    geminiResp = await fetch(geminiUrl, {
+    resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -191,26 +178,66 @@ Deno.serve(async (req) => {
       }),
     });
   } catch (e) {
-    return json(502, { error: 'Failed to reach Gemini API', detail: String(e) });
+    return { error: `Network error calling ${model}: ${String(e)}`, status: 502 };
   }
 
-  if (!geminiResp.ok) {
-    const errText = await geminiResp.text().catch(() => '');
-    return json(502, { error: `Gemini API returned ${geminiResp.status}`, detail: errText });
+  if (!resp.ok) {
+    return { error: `Model ${model} returned ${resp.status}`, status: resp.status };
   }
 
-  const geminiData = await geminiResp.json() as {
+  const data = await resp.json() as {
     candidates?: { content?: { parts?: { text?: string }[] } }[];
   };
+  const raw = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
 
-  const raw = geminiData.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-
-  let analysis: AIAnalysis;
   try {
-    analysis = JSON.parse(raw) as AIAnalysis;
+    const analysis = JSON.parse(raw) as AIAnalysis;
+    return { analysis, modelUsed: model };
   } catch {
-    return json(502, { error: 'Gemini returned non-JSON response', raw });
+    return { error: `${model} returned non-JSON`, status: 502 };
+  }
+}
+
+/* ── Main handler ───────────────────────────────────────────────────────── */
+// Always return HTTP 200 so the client can read the JSON body.
+// Errors are communicated via { ok: false, error: "..." } in the body.
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  if (req.method !== 'POST') return json(200, { ok: false, error: 'Method not allowed' });
+
+  const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
+  if (!GEMINI_API_KEY) {
+    return json(200, { ok: false, error: 'GEMINI_API_KEY secret is not set. Add it in the Supabase Dashboard → Edge Functions → Secrets.' });
   }
 
-  return json(200, { ok: true, analysis });
+  let snapshot: FinancialSnapshot;
+  try {
+    snapshot = await req.json() as FinancialSnapshot;
+  } catch {
+    return json(200, { ok: false, error: 'Invalid request body' });
+  }
+
+  const prompt = buildPrompt(snapshot);
+
+  // Fallback chain: try models in order, skip 429/quota errors
+  const models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-8b'];
+  const errors: string[] = [];
+
+  for (const model of models) {
+    const result = await tryModel(model, prompt, GEMINI_API_KEY);
+
+    if ('analysis' in result) {
+      return json(200, { ok: true, analysis: result.analysis, modelUsed: result.modelUsed });
+    }
+
+    errors.push(`${model}: ${result.error}`);
+
+    // Only skip to the next model on quota/rate-limit errors (429)
+    if (result.status !== 429) break;
+  }
+
+  return json(200, {
+    ok: false,
+    error: `All Gemini models failed. Details: ${errors.join(' | ')}`,
+  });
 });

@@ -732,13 +732,20 @@ export function Reports() {
         })),
       };
 
-      const { data, error } = await supabase.functions.invoke<{ ok: boolean; analysis: AIAnalysis }>('ai-analysis', {
-        body: snapshot,
-      });
+      const { data, error } = await supabase.functions.invoke<{
+        ok: boolean;
+        analysis?: AIAnalysis;
+        error?: string;
+        modelUsed?: string;
+      }>('ai-analysis', { body: snapshot });
 
-      if (error || !data?.ok) {
-        setAiError((error as { message?: string })?.message ?? 'AI analysis failed. Check that GEMINI_API_KEY is set.');
-      } else {
+      if (error) {
+        // Supabase client error (network, etc.)
+        setAiError((error as { message?: string })?.message ?? 'Failed to reach the AI service.');
+      } else if (!data?.ok) {
+        // Function returned ok:false — show the actual error from the body
+        setAiError(data?.error ?? 'AI analysis failed. Check that GEMINI_API_KEY is set in Supabase secrets.');
+      } else if (data?.analysis) {
         setAiAnalysis(data.analysis);
       }
     } catch (e) {

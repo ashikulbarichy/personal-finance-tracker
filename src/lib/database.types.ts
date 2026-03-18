@@ -196,6 +196,7 @@ export type Database = {
           type: 'income' | 'expense'
           currency: string
           custom_rate: number | null
+          transfer_pair_id: string | null
           title: string
           description: string | null
           transaction_date: string
@@ -219,6 +220,7 @@ export type Database = {
           type: 'income' | 'expense'
           currency?: string
           custom_rate?: number | null
+          transfer_pair_id?: string | null
           title?: string
           description?: string | null
           transaction_date?: string
@@ -242,6 +244,7 @@ export type Database = {
           type?: 'income' | 'expense'
           currency?: string
           custom_rate?: number | null
+          transfer_pair_id?: string | null
           title?: string
           description?: string | null
           transaction_date?: string

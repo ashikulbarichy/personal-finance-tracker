@@ -132,8 +132,10 @@ export interface TransactionFormModalProps {
   onSaved: () => void;
   /** Pre-select a transaction type when opening */
   initialType?: 'expense' | 'income' | 'transfer';
-  /** Provide to open the form in edit mode */
+  /** Provide to open the form in edit mode for a regular transaction */
   editingTransaction?: Transaction | null;
+  /** Provide to open the form in edit mode for a transfer pair */
+  editingTransfer?: { fromLeg: Transaction; toLeg: Transaction } | null;
 }
 
 /* ─── Payee Combobox ─────────────────────────────────────────────────────── */
@@ -231,6 +233,7 @@ export function TransactionFormModal({
   onSaved,
   initialType = 'expense',
   editingTransaction = null,
+  editingTransfer = null,
 }: TransactionFormModalProps) {
   const { user } = useAuth();
 
@@ -396,7 +399,32 @@ export function TransactionFormModal({
   /* ── Populate form when editing ── */
   useEffect(() => {
     if (!isOpen) return;
-    if (editingTransaction) {
+
+    if (editingTransfer) {
+      const { fromLeg } = editingTransfer;
+      setFormData({
+        account_id: editingTransfer.fromLeg.account_id,
+        to_account_id: editingTransfer.toLeg.account_id,
+        category_id: '',
+        title: fromLeg.title || '',
+        amount: fromLeg.amount.toString(),
+        type: 'transfer',
+        description: '',
+        transaction_date: fromLeg.transaction_date
+          ? new Date(fromLeg.transaction_date).toISOString().slice(0, 16)
+          : new Date().toISOString().slice(0, 16),
+        timezone: fromLeg.timezone || defaultTimeZone,
+        notes: fromLeg.notes || '',
+      });
+      setSelectedTags(fromLeg.tags || []);
+      setGroupId(fromLeg.group_id || '');
+      setBudgetId('');
+      setPayeeId(''); setPayeeInput('');
+      setPayerId(''); setPayerInput('');
+      setIsSplit(false); setSplits([]);
+      setCustomRate(fromLeg.custom_rate != null ? String(fromLeg.custom_rate) : '');
+
+    } else if (editingTransaction) {
       setFormData({
         account_id: editingTransaction.account_id,
         to_account_id: '',
@@ -413,16 +441,15 @@ export function TransactionFormModal({
       });
       if (editingTransaction.payee_id) {
         setPayeeId(editingTransaction.payee_id);
-        // Name resolved once payees load
       }
       if (editingTransaction.payer_id) {
         setPayerId(editingTransaction.payer_id);
-        // Name resolved once payees load
       }
       setSelectedTags(editingTransaction.tags || []);
       setGroupId(editingTransaction.group_id || '');
       setBudgetId(editingTransaction.budget_id || '');
       setCustomRate(editingTransaction.custom_rate != null ? String(editingTransaction.custom_rate) : '');
+
     } else {
       setFormData(blankForm());
       setPayeeId('');
@@ -438,12 +465,12 @@ export function TransactionFormModal({
     }
     setDateTouched(false);
     setError(null);
-  }, [isOpen, editingTransaction, blankForm, defaultTimeZone]);
+  }, [isOpen, editingTransaction, editingTransfer, blankForm, defaultTimeZone]);
 
   // When opening a NEW transaction form, ensure it shows "now" in the selected timezone
   useEffect(() => {
     if (!isOpen) return;
-    if (editingTransaction) return;
+    if (editingTransaction || editingTransfer) return;
     setFormData((prev) => ({
       ...prev,
       transaction_date: nowForTimeZone(prev.timezone || defaultTimeZone),
@@ -518,43 +545,84 @@ export function TransactionFormModal({
       const amount = parseFloat(formData.amount);
       const fromAccount = accounts.find((a) => a.id === formData.account_id);
       const toAccount = accounts.find((a) => a.id === formData.to_account_id);
-      const baseDescription = formData.description || 'Account transfer';
+      const title = formData.title || 'Transfer';
 
-      const { error: err } = await supabase.from('transactions').insert([
-        {
-          user_id: user.id,
-          account_id: formData.account_id,
-          category_id: null,
-          amount,
-          type: 'expense',
-          title: formData.title || 'Transfer',
-          description: baseDescription + (toAccount ? ` (to ${toAccount.name})` : ''),
-          transaction_date: formData.transaction_date,
-          timezone: formData.timezone,
-          currency: getCurrencyForAccount(formData.account_id),
-          custom_rate: parsedCustomRate,
-          tags: selectedTags,
-          group_id: groupId || null,
-          notes: formData.notes || null,
-        },
-        {
-          user_id: user.id,
-          account_id: formData.to_account_id,
-          category_id: null,
-          amount,
-          type: 'income',
-          title: formData.title || 'Transfer',
-          description: baseDescription + (fromAccount ? ` (from ${fromAccount.name})` : ''),
-          transaction_date: formData.transaction_date,
-          timezone: formData.timezone,
-          currency: getCurrencyForAccount(formData.to_account_id),
-          custom_rate: parsedCustomRate,
-          tags: selectedTags,
-          group_id: groupId || null,
-          notes: formData.notes || null,
-        },
-      ]);
-      if (err) { setError(err.message); setSubmitting(false); return; }
+      if (editingTransfer) {
+        // UPDATE both existing legs
+        const [r1, r2] = await Promise.all([
+          supabase.from('transactions').update({
+            account_id: formData.account_id,
+            amount,
+            title,
+            description: `Account transfer${toAccount ? ` (to ${toAccount.name})` : ''}`,
+            transaction_date: formData.transaction_date,
+            timezone: formData.timezone,
+            currency: getCurrencyForAccount(formData.account_id),
+            custom_rate: parsedCustomRate,
+            tags: selectedTags,
+            group_id: groupId || null,
+            notes: formData.notes || null,
+          }).eq('id', editingTransfer.fromLeg.id),
+          supabase.from('transactions').update({
+            account_id: formData.to_account_id,
+            amount,
+            title,
+            description: `Account transfer${fromAccount ? ` (from ${fromAccount.name})` : ''}`,
+            transaction_date: formData.transaction_date,
+            timezone: formData.timezone,
+            currency: getCurrencyForAccount(formData.to_account_id),
+            custom_rate: parsedCustomRate,
+            tags: selectedTags,
+            group_id: groupId || null,
+            notes: formData.notes || null,
+          }).eq('id', editingTransfer.toLeg.id),
+        ]);
+        if (r1.error || r2.error) {
+          setError(r1.error?.message || r2.error?.message || 'Update failed');
+          setSubmitting(false);
+          return;
+        }
+      } else {
+        // INSERT new transfer pair
+        const transferPairId = crypto.randomUUID();
+        const { error: err } = await supabase.from('transactions').insert([
+          {
+            user_id: user.id,
+            account_id: formData.account_id,
+            category_id: null,
+            amount,
+            type: 'expense',
+            title,
+            description: `Account transfer${toAccount ? ` (to ${toAccount.name})` : ''}`,
+            transaction_date: formData.transaction_date,
+            timezone: formData.timezone,
+            currency: getCurrencyForAccount(formData.account_id),
+            custom_rate: parsedCustomRate,
+            transfer_pair_id: transferPairId,
+            tags: selectedTags,
+            group_id: groupId || null,
+            notes: formData.notes || null,
+          },
+          {
+            user_id: user.id,
+            account_id: formData.to_account_id,
+            category_id: null,
+            amount,
+            type: 'income',
+            title,
+            description: `Account transfer${fromAccount ? ` (from ${fromAccount.name})` : ''}`,
+            transaction_date: formData.transaction_date,
+            timezone: formData.timezone,
+            currency: getCurrencyForAccount(formData.to_account_id),
+            custom_rate: parsedCustomRate,
+            transfer_pair_id: transferPairId,
+            tags: selectedTags,
+            group_id: groupId || null,
+            notes: formData.notes || null,
+          },
+        ]);
+        if (err) { setError(err.message); setSubmitting(false); return; }
+      }
 
     } else if (isSplit && splits.length > 0) {
       const mainTitle = formData.title || 'Split';
@@ -634,7 +702,7 @@ export function TransactionFormModal({
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 shrink-0">
           <h3 className="text-base font-semibold text-slate-100">
-            {editingTransaction ? 'Edit Transaction' : 'New Transaction'}
+            {editingTransfer ? 'Edit Transfer' : editingTransaction ? 'Edit Transaction' : 'New Transaction'}
           </h3>
           <button type="button" onClick={onClose}
             className="p-1.5 text-slate-400 hover:text-slate-100 hover:bg-slate-700/80 rounded-lg transition-colors">

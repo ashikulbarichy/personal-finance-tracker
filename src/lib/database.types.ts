@@ -195,6 +195,7 @@ export type Database = {
           amount: number
           type: 'income' | 'expense'
           currency: string
+          custom_rate: number | null
           title: string
           description: string | null
           transaction_date: string
@@ -217,6 +218,7 @@ export type Database = {
           amount: number
           type: 'income' | 'expense'
           currency?: string
+          custom_rate?: number | null
           title?: string
           description?: string | null
           transaction_date?: string
@@ -239,6 +241,7 @@ export type Database = {
           amount?: number
           type?: 'income' | 'expense'
           currency?: string
+          custom_rate?: number | null
           title?: string
           description?: string | null
           transaction_date?: string
@@ -801,6 +804,30 @@ export type Database = {
           name?: string
           color?: string
           created_at?: string
+        }
+        Relationships: []
+      }
+      exchange_rates: {
+        Row: {
+          base_currency: string
+          rates: Record<string, number>
+          provider: string
+          fetched_at: string
+          expires_at: string
+        }
+        Insert: {
+          base_currency: string
+          rates: Record<string, number>
+          provider?: string
+          fetched_at?: string
+          expires_at?: string
+        }
+        Update: {
+          base_currency?: string
+          rates?: Record<string, number>
+          provider?: string
+          fetched_at?: string
+          expires_at?: string
         }
         Relationships: []
       }

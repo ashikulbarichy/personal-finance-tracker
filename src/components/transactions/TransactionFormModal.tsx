@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { X, ArrowRight, UserCheck, Trash2 } from 'lucide-react';
+import { X, ArrowRight, UserCheck, Trash2, RefreshCw } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import type { Database } from '../../lib/database.types';
@@ -278,6 +278,11 @@ export function TransactionFormModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  /* ── Exchange rate override ── */
+  const [liveRate, setLiveRate] = useState<number | null>(null);
+  const [customRate, setCustomRate] = useState('');
+  const [rateLoading, setRateLoading] = useState(false);
+
   /* ── Load data when modal opens ── */
   const loadData = useCallback(async () => {
     if (!user || !isOpen) return;
@@ -302,6 +307,91 @@ export function TransactionFormModal({
   }, [user, isOpen]);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  /* ── Fetch live exchange rate when account + displayCurrency are known ── */
+  const fetchLiveRate = useCallback(async (accountId: string) => {
+    const acc = accounts.find((a) => a.id === accountId);
+    const accCurrency = (acc?.currency ?? displayCurrency).toUpperCase();
+    const defaultCurrency = displayCurrency.toUpperCase();
+
+    if (!accCurrency || accCurrency === defaultCurrency) {
+      setLiveRate(null);
+      return;
+    }
+    setRateLoading(true);
+
+    // Helper: extract displayCurrency per 1 accCurrency from a rates map
+    // where the map's base is `mapBase`.
+    const extractRate = (
+      ratesMap: Record<string, number>,
+      mapBase: string,
+    ): number | null => {
+      if (mapBase === defaultCurrency) {
+        // rates[accCurrency] = how many accCurrency per 1 defaultCurrency
+        // → we want: how many defaultCurrency per 1 accCurrency = 1 / rates[accCurrency]
+        const v = ratesMap[accCurrency];
+        return v != null ? parseFloat((1 / v).toFixed(8)) : null;
+      }
+      if (mapBase === accCurrency) {
+        // rates[defaultCurrency] = how many defaultCurrency per 1 accCurrency ← exactly what we need
+        const v = ratesMap[defaultCurrency];
+        return v != null ? v : null;
+      }
+      return null;
+    };
+
+    try {
+      // 1. Try DB cache with base = defaultCurrency
+      const { data: d1 } = await supabase
+        .from('exchange_rates')
+        .select('rates')
+        .eq('base_currency', defaultCurrency)
+        .single();
+
+      if (d1?.rates) {
+        const r = extractRate(d1.rates as Record<string, number>, defaultCurrency);
+        if (r != null) { setLiveRate(r); return; }
+      }
+
+      // 2. Try DB cache with base = accCurrency
+      const { data: d2 } = await supabase
+        .from('exchange_rates')
+        .select('rates')
+        .eq('base_currency', accCurrency)
+        .single();
+
+      if (d2?.rates) {
+        const r = extractRate(d2.rates as Record<string, number>, accCurrency);
+        if (r != null) { setLiveRate(r); return; }
+      }
+
+      // 3. On-demand fetch via Edge Function (auto-fetches + caches for missing base)
+      const { data: efData } = await supabase.functions.invoke<{
+        rates: Record<string, number>;
+        base_currency: string;
+      }>('rates', { body: { base_currency: accCurrency } });
+
+      if (efData?.rates) {
+        const r = extractRate(efData.rates, accCurrency);
+        if (r != null) { setLiveRate(r); return; }
+      }
+
+      setLiveRate(null);
+    } catch {
+      setLiveRate(null);
+    } finally {
+      setRateLoading(false);
+    }
+  }, [accounts, displayCurrency]);
+
+  /* Trigger rate fetch when account or display currency changes */
+  useEffect(() => {
+    if (formData.account_id && accounts.length > 0) {
+      fetchLiveRate(formData.account_id);
+    } else {
+      setLiveRate(null);
+    }
+  }, [formData.account_id, accounts, fetchLiveRate]);
 
   /* ── Populate form when editing ── */
   useEffect(() => {
@@ -332,6 +422,7 @@ export function TransactionFormModal({
       setSelectedTags(editingTransaction.tags || []);
       setGroupId(editingTransaction.group_id || '');
       setBudgetId(editingTransaction.budget_id || '');
+      setCustomRate(editingTransaction.custom_rate != null ? String(editingTransaction.custom_rate) : '');
     } else {
       setFormData(blankForm());
       setPayeeId('');
@@ -343,6 +434,7 @@ export function TransactionFormModal({
       setBudgetId('');
       setIsSplit(false);
       setSplits([]);
+      setCustomRate('');
     }
     setDateTouched(false);
     setError(null);
@@ -420,6 +512,8 @@ export function TransactionFormModal({
       return acc?.currency || displayCurrency || 'USD';
     };
 
+    const parsedCustomRate = customRate.trim() !== '' ? parseFloat(customRate) : null;
+
     if (formData.type === 'transfer') {
       const amount = parseFloat(formData.amount);
       const fromAccount = accounts.find((a) => a.id === formData.account_id);
@@ -438,6 +532,7 @@ export function TransactionFormModal({
           transaction_date: formData.transaction_date,
           timezone: formData.timezone,
           currency: getCurrencyForAccount(formData.account_id),
+          custom_rate: parsedCustomRate,
           tags: selectedTags,
           group_id: groupId || null,
           notes: formData.notes || null,
@@ -453,6 +548,7 @@ export function TransactionFormModal({
           transaction_date: formData.transaction_date,
           timezone: formData.timezone,
           currency: getCurrencyForAccount(formData.to_account_id),
+          custom_rate: parsedCustomRate,
           tags: selectedTags,
           group_id: groupId || null,
           notes: formData.notes || null,
@@ -481,6 +577,7 @@ export function TransactionFormModal({
             transaction_date: formData.transaction_date,
             timezone: formData.timezone,
             currency: getCurrencyForAccount(accountId),
+            custom_rate: parsedCustomRate,
             notes: formData.notes || null,
             tags: selectedTags,
             group_id: groupId || null,
@@ -505,6 +602,7 @@ export function TransactionFormModal({
         transaction_date: formData.transaction_date,
         timezone: formData.timezone,
         currency: getCurrencyForAccount(formData.account_id),
+        custom_rate: parsedCustomRate,
         notes: formData.notes,
         tags: selectedTags,
         group_id: groupId || null,
@@ -661,6 +759,95 @@ export function TransactionFormModal({
                   onChange={(e) => setFormData((f) => ({ ...f, amount: e.target.value }))}
                   className={inputCls} />
               </div>
+
+              {/* Exchange rate override — only shown when account currency ≠ default currency */}
+              {(() => {
+                const acc = accounts.find((a) => a.id === formData.account_id);
+                const accCurrency = acc?.currency;
+                if (!accCurrency || accCurrency === displayCurrency) return null;
+                const effectiveRate = customRate.trim() !== '' ? parseFloat(customRate) : liveRate;
+                const convertedAmt = formData.amount && effectiveRate
+                  ? (parseFloat(formData.amount) * effectiveRate).toFixed(2)
+                  : null;
+                return (
+                  <div className="md:col-span-2">
+                    <div className="bg-slate-800/60 border border-slate-700 rounded-xl p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-slate-300 tracking-wide uppercase">
+                          Exchange Rate
+                          <span className="ml-2 font-normal normal-case text-slate-500">
+                            ({accCurrency} → {displayCurrency})
+                          </span>
+                        </span>
+                        {customRate.trim() !== '' && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-medium">
+                            Manual override
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        <div className="flex-1">
+                          <label className={labelCls}>
+                            Rate{' '}
+                            <span className="text-slate-500 font-normal">
+                              1 {accCurrency} =
+                            </span>
+                          </label>
+                          <div className="relative">
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              value={customRate}
+                              onChange={(e) => setCustomRate(e.target.value)}
+                              placeholder={liveRate != null ? liveRate.toFixed(6) : 'Loading…'}
+                              className={`${inputCls} pr-20`}
+                            />
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs pointer-events-none">
+                              {displayCurrency}
+                            </span>
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          title="Reset to live rate"
+                          disabled={rateLoading}
+                          onClick={() => {
+                            setCustomRate('');
+                            fetchLiveRate(formData.account_id);
+                          }}
+                          className="mt-5 p-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-400 hover:text-slate-200 transition-colors disabled:opacity-50"
+                        >
+                          <RefreshCw size={14} className={rateLoading ? 'animate-spin' : ''} />
+                        </button>
+                      </div>
+
+                      {/* Converted preview */}
+                      {convertedAmt && (
+                        <p className="text-xs text-slate-400">
+                          ≈{' '}
+                          <span className="text-slate-200 font-semibold">
+                            {displayCurrency} {convertedAmt}
+                          </span>
+                          {customRate.trim() !== '' ? (
+                            <span className="ml-1.5 text-amber-400">(custom rate)</span>
+                          ) : liveRate != null ? (
+                            <span className="ml-1.5 text-emerald-400">(live rate)</span>
+                          ) : null}
+                        </p>
+                      )}
+
+                      {!liveRate && !rateLoading && customRate.trim() === '' && (
+                        <p className="text-xs text-amber-400">
+                          No live rate found for {accCurrency}/{displayCurrency}. Enter a manual rate above.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {formData.type !== 'transfer' && (
                 <div>

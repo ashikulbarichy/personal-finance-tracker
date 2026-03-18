@@ -224,8 +224,17 @@ export function Transactions() {
                       </span>
                     ) : <span className="text-slate-600">—</span>}
                   </td>
-                  <td className={`px-5 py-3 text-sm font-semibold ${t.type === 'income' ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {t.type === 'income' ? '+' : '-'}{displayCurrency} {Number(t.amount).toFixed(2)}
+                  <td className="px-5 py-3 text-sm">
+                    <div className="flex flex-col items-start gap-0.5">
+                      <span className={`font-semibold ${t.type === 'income' ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {t.type === 'income' ? '+' : '-'}{t.currency} {Number(t.amount).toFixed(2)}
+                      </span>
+                      {t.custom_rate != null && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 leading-tight">
+                          rate {t.custom_rate}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-5 py-3 text-right text-sm">
                     <div className="flex items-center justify-end gap-2">
@@ -249,9 +258,16 @@ export function Transactions() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-sm font-medium text-slate-100 truncate">{t.title || t.description || 'Transaction'}</p>
-                  <span className={`text-sm font-semibold whitespace-nowrap ${t.type === 'income' ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {t.type === 'income' ? '+' : '-'}{displayCurrency} {Number(t.amount).toFixed(2)}
-                  </span>
+                  <div className="flex flex-col items-end gap-0.5">
+                    <span className={`text-sm font-semibold whitespace-nowrap ${t.type === 'income' ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {t.type === 'income' ? '+' : '-'}{t.currency} {Number(t.amount).toFixed(2)}
+                    </span>
+                    {t.custom_rate != null && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 leading-tight">
+                        rate {t.custom_rate}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="flex items-center gap-1.5 mt-0.5 text-xs text-slate-500">
                   <span>{new Date(t.transaction_date).toLocaleDateString()}</span>

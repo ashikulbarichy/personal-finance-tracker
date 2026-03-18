@@ -1,0 +1,41 @@
+# supabase/config.toml
+# Docs: https://supabase.com/docs/guides/local-development
+
+[api]
+enabled = true
+port = 54321
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 17
+
+[studio]
+enabled = true
+port = 54323
+
+[inbucket]
+enabled = true
+port = 54324
+
+[storage]
+enabled = true
+
+[auth]
+enabled = true
+site_url = "http://localhost:5173"
+additional_redirect_urls = []
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = false
+
+# ── Edge Functions ───────────────────────────────────────────────────────────────────
+# Note: cron scheduling for refresh-rates is configured in the Supabase dashboard
+# under: Project → Edge Functions → refresh-rates → Schedule
+# or via SQL: select cron.schedule('refresh-rates-hourly', '0 * * * *',
+#   $$ select net.http_post(url := 'https://<project-ref>.supabase.co/functions/v1/refresh-rates',
+#      headers := '{"Authorization":"Bearer <anon-key>"}', body := '{}') $$);

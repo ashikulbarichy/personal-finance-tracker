@@ -257,7 +257,7 @@ export function Dashboard() {
     const monthBars: MonthBar[] = [];
     for (let i = 5; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      monthBars.unshift({
+      monthBars.push({
         label: d.toLocaleString('default', { month: 'short' }),
         income: 0,
         expenses: 0,

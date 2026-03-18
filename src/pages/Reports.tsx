@@ -1,12 +1,24 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { Calendar, TrendingUp, TrendingDown, Activity, PieChart as PieIcon, BarChart2 } from 'lucide-react';
+import { Calendar, TrendingUp, TrendingDown, Activity, PieChart as PieIcon, BarChart2, UserCheck, Users } from 'lucide-react';
 
 interface CategorySpending {
   category: string;
   amount: number;
   color: string;
+}
+
+interface PersonRow {
+  name: string;
+  amount: number;
+  count: number;
+}
+
+interface MonthlyCatData {
+  months: string[];
+  categories: { name: string; color: string; monthAmounts: number[] }[];
+  monthTotals: number[];
 }
 
 interface DailyPoint {
@@ -308,6 +320,134 @@ function DailyBarChart({ points }: { points: DailyPoint[] }) {
   );
 }
 
+/* ── Ranked person bar list (payees / payers) ────────────────────────────── */
+function PersonBarList({ rows, currency, emptyText }: { rows: PersonRow[]; currency: string; emptyText: string }) {
+  const maxAmt = Math.max(...rows.map((r) => r.amount), 1);
+  const total  = rows.reduce((s, r) => s + r.amount, 0);
+
+  if (rows.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-10 text-slate-600">
+        <Users size={32} strokeWidth={1} className="mb-2" />
+        <p className="text-sm">{emptyText}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {rows.map((row, i) => (
+        <div key={row.name}>
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="w-5 h-5 rounded-full bg-slate-700 text-slate-400 text-[10px] font-bold flex items-center justify-center shrink-0">
+                {i + 1}
+              </span>
+              <span className="text-sm font-medium text-slate-200 truncate">{row.name}</span>
+              <span className="text-[10px] text-slate-500 shrink-0">{row.count}×</span>
+            </div>
+            <div className="flex items-center gap-3 shrink-0 ml-3">
+              <span className="text-[10px] text-slate-500">{total > 0 ? ((row.amount / total) * 100).toFixed(1) : 0}%</span>
+              <span className="text-sm font-semibold text-slate-100 w-28 text-right">
+                {currency} {row.amount.toFixed(2)}
+              </span>
+            </div>
+          </div>
+          <div className="relative h-5 bg-slate-800/80 rounded-lg overflow-hidden">
+            <div
+              className="h-full rounded-lg transition-all duration-500"
+              style={{ width: `${(row.amount / maxAmt) * 100}%`, background: 'linear-gradient(90deg, #3b82f6 0%, #6366f1 100%)', opacity: 0.8 }}
+            />
+            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-white/60">
+              {total > 0 ? ((row.amount / total) * 100).toFixed(0) : 0}%
+            </span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ── Monthly category heatmap ────────────────────────────────────────────── */
+function MonthlyCategoryHeatmap({ data, currency }: { data: MonthlyCatData; currency: string }) {
+  const { months, categories, monthTotals } = data;
+
+  if (categories.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-10 text-slate-600">
+        <BarChart2 size={32} strokeWidth={1} className="mb-2" />
+        <p className="text-sm">No expense category data for the last 6 months</p>
+      </div>
+    );
+  }
+
+  const maxCell = Math.max(...categories.flatMap((c) => c.monthAmounts), 1);
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs min-w-[480px]">
+        <thead>
+          <tr>
+            <th className="text-left text-slate-500 font-medium pb-3 pr-4 w-36">Category</th>
+            {months.map((m) => (
+              <th key={m} className="text-center text-slate-500 font-medium pb-3 px-1">{m}</th>
+            ))}
+            <th className="text-right text-slate-500 font-medium pb-3 pl-3">Total</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-800/50">
+          {categories.map((cat) => {
+            const rowTotal = cat.monthAmounts.reduce((s, a) => s + a, 0);
+            return (
+              <tr key={cat.name} className="hover:bg-slate-800/20 transition-colors">
+                <td className="py-2 pr-4">
+                  <div className="flex items-center gap-2">
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: cat.color }} />
+                    <span className="text-slate-300 truncate max-w-[110px]">{cat.name}</span>
+                  </div>
+                </td>
+                {cat.monthAmounts.map((amt, mi) => (
+                  <td key={mi} className="py-2 px-1 text-center">
+                    {amt > 0 ? (
+                      <div
+                        className="mx-auto rounded px-1 py-0.5 text-[10px] font-semibold text-white/90 min-w-[44px]"
+                        style={{
+                          backgroundColor: cat.color,
+                          opacity: 0.25 + (amt / maxCell) * 0.75,
+                        }}
+                      >
+                        {amt >= 1000 ? `${(amt / 1000).toFixed(1)}k` : amt.toFixed(0)}
+                      </div>
+                    ) : (
+                      <span className="text-slate-700">—</span>
+                    )}
+                  </td>
+                ))}
+                <td className="py-2 pl-3 text-right font-semibold text-slate-200">
+                  {currency} {rowTotal.toFixed(0)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+        <tfoot>
+          <tr className="border-t border-slate-700">
+            <td className="pt-2.5 pr-4 text-slate-500 font-semibold">Monthly Total</td>
+            {monthTotals.map((tot, mi) => (
+              <td key={mi} className="pt-2.5 px-1 text-center font-semibold text-slate-300">
+                {tot > 0 ? (tot >= 1000 ? `${(tot / 1000).toFixed(1)}k` : tot.toFixed(0)) : <span className="text-slate-700">—</span>}
+              </td>
+            ))}
+            <td className="pt-2.5 pl-3 text-right font-bold text-slate-100">
+              {currency} {monthTotals.reduce((s, t) => s + t, 0).toFixed(0)}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
 /* ── Main component ──────────────────────────────────────────────────────── */
 export function Reports() {
   const { user } = useAuth();
@@ -320,6 +460,10 @@ export function Reports() {
   const [totalExpenses, setTotalExpenses] = useState(0);
   const [transactionCount, setTransactionCount] = useState(0);
   const [displayCurrency, setDisplayCurrency] = useState('USD');
+  const [payeeAnalysis, setPayeeAnalysis] = useState<PersonRow[]>([]);
+  const [payerAnalysis, setPayerAnalysis] = useState<PersonRow[]>([]);
+  const [payeePayerTab, setPayeePayerTab] = useState<'payee' | 'payer'>('payee');
+  const [monthlyCatData, setMonthlyCatData] = useState<MonthlyCatData>({ months: [], categories: [], monthTotals: [] });
 
   useEffect(() => {
     const now = new Date();
@@ -342,15 +486,87 @@ export function Reports() {
   const loadReportData = useCallback(async () => {
     if (!user || !startDate || !endDate) return;
 
-    const { data: transactions } = await supabase
-      .from('transactions')
-      .select('*, categories(name, color)')
-      .eq('user_id', user.id)
-      .gte('transaction_date', startDate)
-      .lte('transaction_date', endDate)
-      .order('transaction_date', { ascending: true });
+    const now = new Date();
+    const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1).toISOString().split('T')[0];
+
+    const [{ data: transactions }, { data: payeesData }, { data: monthlyCatTx }] = await Promise.all([
+      supabase
+        .from('transactions')
+        .select('*, categories(name, color)')
+        .eq('user_id', user.id)
+        .gte('transaction_date', startDate)
+        .lte('transaction_date', endDate)
+        .order('transaction_date', { ascending: true }),
+      supabase.from('payees').select('id, name').eq('user_id', user.id),
+      supabase
+        .from('transactions')
+        .select('amount, transaction_date, categories(name, color)')
+        .eq('user_id', user.id)
+        .eq('type', 'expense')
+        .gte('transaction_date', sixMonthsAgo)
+        .order('transaction_date', { ascending: true }),
+    ]);
 
     if (!transactions) return;
+
+    /* ── Payee / Payer analysis ── */
+    const payeeNameMap = new Map((payeesData ?? []).map((p) => [p.id, p.name]));
+
+    const payeeMap = new Map<string, PersonRow>();
+    const payerMap = new Map<string, PersonRow>();
+
+    transactions.forEach((t) => {
+      if (t.type === 'expense' && (t as { payee_id?: string | null }).payee_id) {
+        const pid = (t as { payee_id: string }).payee_id;
+        const name = payeeNameMap.get(pid) ?? 'Unknown';
+        const prev = payeeMap.get(pid) ?? { name, amount: 0, count: 0 };
+        payeeMap.set(pid, { name, amount: prev.amount + Number(t.amount), count: prev.count + 1 });
+      }
+      if (t.type === 'income' && (t as { payer_id?: string | null }).payer_id) {
+        const pid = (t as { payer_id: string }).payer_id;
+        const name = payeeNameMap.get(pid) ?? 'Unknown';
+        const prev = payerMap.get(pid) ?? { name, amount: 0, count: 0 };
+        payerMap.set(pid, { name, amount: prev.amount + Number(t.amount), count: prev.count + 1 });
+      }
+    });
+
+    setPayeeAnalysis(Array.from(payeeMap.values()).sort((a, b) => b.amount - a.amount));
+    setPayerAnalysis(Array.from(payerMap.values()).sort((a, b) => b.amount - a.amount));
+
+    /* ── Monthly category heatmap (last 6 months) ── */
+    const monthLabels: string[] = [];
+    const monthKeys: string[] = [];
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      monthKeys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+      monthLabels.push(d.toLocaleString('default', { month: 'short', year: '2-digit' }));
+    }
+
+    // catKey → { color, monthAmounts[6] }
+    const catMonthMap = new Map<string, { color: string; amounts: number[] }>();
+
+    (monthlyCatTx ?? []).forEach((t) => {
+      const cat = (t as { categories?: { name: string; color: string } | null }).categories;
+      if (!cat) return;
+      const monthKey = t.transaction_date.slice(0, 7);
+      const mIdx = monthKeys.indexOf(monthKey);
+      if (mIdx === -1) return;
+      const prev = catMonthMap.get(cat.name) ?? { color: cat.color, amounts: [0, 0, 0, 0, 0, 0] };
+      prev.amounts[mIdx] += Number(t.amount);
+      catMonthMap.set(cat.name, prev);
+    });
+
+    // Sort categories by total spend descending
+    const catRows = Array.from(catMonthMap.entries())
+      .map(([name, v]) => ({ name, color: v.color, monthAmounts: v.amounts, total: v.amounts.reduce((s, a) => s + a, 0) }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 10);
+
+    const monthTotals = monthKeys.map((_, mi) =>
+      catRows.reduce((s, r) => s + r.monthAmounts[mi], 0)
+    );
+
+    setMonthlyCatData({ months: monthLabels, categories: catRows, monthTotals });
 
     const income = transactions.filter((t) => t.type === 'income').reduce((s, t) => s + Number(t.amount), 0);
     const expenses = transactions.filter((t) => t.type === 'expense').reduce((s, t) => s + Number(t.amount), 0);
@@ -543,6 +759,84 @@ export function Reports() {
           </div>
         </div>
         <TrendAreaChart points={dailyPoints} />
+      </div>
+
+      {/* ── Payee / Payer Analysis ── */}
+      <div className="bg-[#141927] p-5 rounded-xl border border-slate-800">
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h4 className="text-base font-semibold text-slate-100">Payee &amp; Payer Analysis</h4>
+            <p className="text-xs text-slate-500 mt-0.5">Who you pay most — and who pays you most</p>
+          </div>
+          <div className="flex items-center gap-1 bg-slate-800 rounded-xl p-1">
+            <button
+              onClick={() => setPayeePayerTab('payee')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                payeePayerTab === 'payee' ? 'bg-red-600/80 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <UserCheck size={12} />
+              Payees
+            </button>
+            <button
+              onClick={() => setPayeePayerTab('payer')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                payeePayerTab === 'payer' ? 'bg-emerald-600/80 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <UserCheck size={12} />
+              Payers
+            </button>
+          </div>
+        </div>
+
+        {payeePayerTab === 'payee' ? (
+          <>
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-xs text-slate-400">
+                {payeeAnalysis.length > 0
+                  ? <><span className="text-red-400 font-semibold">{payeeAnalysis.length} payees</span> — total outflow {displayCurrency} {payeeAnalysis.reduce((s, r) => s + r.amount, 0).toFixed(2)}</>
+                  : 'No payee data for this period'}
+              </p>
+            </div>
+            <PersonBarList
+              rows={payeeAnalysis}
+              currency={displayCurrency}
+              emptyText="No expense transactions with payees in this period"
+            />
+          </>
+        ) : (
+          <>
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-xs text-slate-400">
+                {payerAnalysis.length > 0
+                  ? <><span className="text-emerald-400 font-semibold">{payerAnalysis.length} payers</span> — total inflow {displayCurrency} {payerAnalysis.reduce((s, r) => s + r.amount, 0).toFixed(2)}</>
+                  : 'No payer data for this period'}
+              </p>
+            </div>
+            <PersonBarList
+              rows={payerAnalysis}
+              currency={displayCurrency}
+              emptyText="No income transactions with payers in this period"
+            />
+          </>
+        )}
+      </div>
+
+      {/* ── Monthly Category Heatmap (last 6 months) ── */}
+      <div className="bg-[#141927] p-5 rounded-xl border border-slate-800">
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h4 className="text-base font-semibold text-slate-100">Monthly Category Spending</h4>
+            <p className="text-xs text-slate-500 mt-0.5">Last 6 months — darker cells = higher spend</p>
+          </div>
+          {monthlyCatData.categories.length > 0 && (
+            <span className="text-[10px] text-slate-500 bg-slate-800 px-2 py-1 rounded-lg">
+              Top {monthlyCatData.categories.length} categories
+            </span>
+          )}
+        </div>
+        <MonthlyCategoryHeatmap data={monthlyCatData} currency={displayCurrency} />
       </div>
 
       {/* ── Daily bar + Category donut ── */}

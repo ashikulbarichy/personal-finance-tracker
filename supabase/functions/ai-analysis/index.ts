@@ -1,10 +1,7 @@
 /**
  * ai-analysis Edge Function
- *
- * Receives a financial snapshot from the client, builds a prompt, and
- * calls the Gemini 2.0 Flash API to produce structured recommendations.
- *
- * Required secret:  GEMINI_API_KEY
+ * Model: gemini-2.0-flash-lite (cheapest Tier 1) → gemini-1.5-flash-8b fallback
+ * Minimal prompt, concise JSON output.
  */
 import { corsHeaders } from '../_shared/cors.ts';
 
@@ -15,12 +12,10 @@ function json(status: number, body: unknown) {
   });
 }
 
-/* ── Types ──────────────────────────────────────────────────────────────── */
-interface CategoryItem  { category: string; amount: number; pct: number }
-interface PersonItem    { name: string; amount: number; count: number }
-interface GoalItem      { name: string; target: number; current: number; pct: number; deadline?: string; timeline?: string }
-interface BudgetItem    { name: string; period: string; allocated: number; spent: number; pct: number }
-interface MonthItem     { month: string; income: number; expenses: number }
+interface CategoryItem { category: string; amount: number; pct: number }
+interface PersonItem   { name: string; amount: number; count: number }
+interface GoalItem     { name: string; target: number; current: number; pct: number; deadline?: string }
+interface BudgetItem   { name: string; allocated: number; spent: number; pct: number }
 
 interface FinancialSnapshot {
   period: string;
@@ -36,126 +31,59 @@ interface FinancialSnapshot {
   topPayers: PersonItem[];
   savingsGoals: GoalItem[];
   budgets: BudgetItem[];
-  monthlyTrend: MonthItem[];
+  monthlyTrend: { month: string; expenses: number }[];
 }
 
 export interface AIAnalysis {
-  health_score: number;          // 1–10
-  health_label: string;          // Poor / Fair / Good / Very Good / Excellent
+  health_score: number;
+  health_label: string;
   summary: string;
   strengths: string[];
   concerns: string[];
-  recommendations: {
-    title: string;
-    detail: string;
-    priority: 'high' | 'medium' | 'low';
-  }[];
+  recommendations: { title: string; detail: string; priority: 'high' | 'medium' | 'low' }[];
   goal_advice: { goal: string; advice: string }[];
   budget_advice: { budget: string; advice: string }[];
-  action_items: string[];        // quick wins, bullet list
+  action_items: string[];
 }
 
-/* ── Prompt builder ─────────────────────────────────────────────────────── */
-function buildPrompt(data: FinancialSnapshot): string {
-  const fmt = (n: number) => `${data.currency} ${n.toFixed(2)}`;
+/* ── Compact prompt (minimal tokens) ───────────────────────────────────── */
+function buildPrompt(d: FinancialSnapshot): string {
+  const c = d.currency;
+  const r = (n: number) => `${c}${n.toFixed(0)}`;
 
-  const catList = data.categorySpending
-    .slice(0, 8)
-    .map((c) => `  • ${c.category}: ${fmt(c.amount)} (${c.pct.toFixed(1)}%)`)
-    .join('\n') || '  (none)';
+  const cats = d.categorySpending.slice(0, 5)
+    .map((x) => `${x.category}:${r(x.amount)}(${x.pct.toFixed(0)}%)`).join(', ') || 'none';
 
-  const payeeList = data.topPayees
-    .slice(0, 6)
-    .map((p) => `  • ${p.name}: ${fmt(p.amount)} (${p.count} txns)`)
-    .join('\n') || '  (none)';
+  const payees = d.topPayees.slice(0, 4)
+    .map((x) => `${x.name}:${r(x.amount)}`).join(', ') || 'none';
 
-  const payerList = data.topPayers
-    .slice(0, 6)
-    .map((p) => `  • ${p.name}: ${fmt(p.amount)} (${p.count} txns)`)
-    .join('\n') || '  (none)';
+  const payers = d.topPayers.slice(0, 4)
+    .map((x) => `${x.name}:${r(x.amount)}`).join(', ') || 'none';
 
-  const goalList = data.savingsGoals
-    .map((g) => {
-      const remaining = g.target - g.current;
-      const deadline  = g.deadline ? ` | Deadline: ${g.deadline}` : '';
-      const tl        = g.timeline ? ` (${g.timeline.replace('_', '-')})` : '';
-      return `  • ${g.name}${tl}: ${fmt(g.current)} / ${fmt(g.target)} (${g.pct.toFixed(1)}%)${deadline} — ${fmt(remaining)} remaining`;
-    })
-    .join('\n') || '  (none)';
+  const goals = d.savingsGoals.slice(0, 4)
+    .map((x) => `${x.name}:${r(x.current)}/${r(x.target)}(${x.pct.toFixed(0)}%)${x.deadline ? ' due:' + x.deadline : ''}`).join('; ') || 'none';
 
-  const budgetList = data.budgets
-    .map((b) => {
-      const over = b.pct > 100 ? ` ⚠ OVER BUDGET by ${fmt(b.spent - b.allocated)}` : '';
-      return `  • ${b.name} (${b.period}): spent ${fmt(b.spent)} of ${fmt(b.allocated)} (${b.pct.toFixed(1)}%)${over}`;
-    })
-    .join('\n') || '  (none)';
+  const budgets = d.budgets.slice(0, 4)
+    .map((x) => `${x.name}:${r(x.spent)}/${r(x.allocated)}(${x.pct.toFixed(0)}%)`).join('; ') || 'none';
 
-  const trendList = data.monthlyTrend
-    .map((m) => {
-      const net = m.income - m.expenses;
-      return `  • ${m.month}: Income ${fmt(m.income)} | Expenses ${fmt(m.expenses)} | Net ${net >= 0 ? '+' : ''}${fmt(net)}`;
-    })
-    .join('\n') || '  (none)';
+  const monthlySavings = d.totalIncome > 0
+    ? r(d.totalIncome * (d.savingsRate / 100))
+    : r(0);
 
-  return `You are an expert personal finance advisor. Analyze the following financial data for a user and provide specific, actionable recommendations tailored to their situation.
+  return `Personal finance advisor. Analyze this data and give short, specific advice using real numbers.
 
-== FINANCIAL SNAPSHOT (${data.period}) ==
+Period:${d.period} | Income:${r(d.totalIncome)} | Expenses:${r(d.totalExpenses)} | Savings:${d.savingsRate.toFixed(0)}%(${monthlySavings}/mo) | NetWorth:${r(d.netWorth)}(Assets:${r(d.totalAssets)},Liabilities:${r(d.totalLiabilities)})
+TopCategories:${cats}
+Payees:${payees}
+Payers:${payers}
+Goals:${goals}
+Budgets:${budgets}
 
-SUMMARY METRICS
-  Income:        ${fmt(data.totalIncome)}
-  Expenses:      ${fmt(data.totalExpenses)}
-  Savings Rate:  ${data.savingsRate.toFixed(1)}%
-  Net Worth:     ${fmt(data.netWorth)}  (Assets: ${fmt(data.totalAssets)}, Liabilities: ${fmt(data.totalLiabilities)})
-
-TOP EXPENSE CATEGORIES
-${catList}
-
-WHO THEY PAY (payees)
-${payeeList}
-
-WHO PAYS THEM (payers / income sources)
-${payerList}
-
-SAVINGS GOALS
-${goalList}
-
-BUDGET STATUS
-${budgetList}
-
-6-MONTH INCOME & EXPENSE TREND
-${trendList}
-
-== INSTRUCTIONS ==
-Provide a complete, honest financial analysis. Be specific — reference actual numbers from the data. Do NOT give generic advice.
-If savings goals exist, calculate roughly how long at the current savings rate it will take to reach each goal and advise accordingly.
-If budgets are over-limit, call that out clearly.
-Point out unusual or concerning spending patterns in the payee list.
-Respond ONLY with a valid JSON object matching this exact schema (no markdown, no code fences):
-
-{
-  "health_score": <integer 1-10>,
-  "health_label": "<Poor|Fair|Good|Very Good|Excellent>",
-  "summary": "<2-3 sentence honest overview of their financial health>",
-  "strengths": ["<strength 1>", "<strength 2>", ...],
-  "concerns": ["<concern 1>", "<concern 2>", ...],
-  "recommendations": [
-    {
-      "title": "<short action title>",
-      "detail": "<specific advice referencing their actual numbers>",
-      "priority": "<high|medium|low>"
-    }
-  ],
-  "goal_advice": [
-    { "goal": "<goal name>", "advice": "<specific advice with timeline estimate>" }
-  ],
-  "budget_advice": [
-    { "budget": "<budget name>", "advice": "<specific advice>" }
-  ],
-  "action_items": ["<quick win 1>", "<quick win 2>", ...]
-}`;
+Reply ONLY with this JSON (no markdown):
+{"health_score":<1-10>,"health_label":"<Poor|Fair|Good|Very Good|Excellent>","summary":"<2 sentences>","strengths":["<max 3, 1 sentence each>"],"concerns":["<max 3, 1 sentence each>"],"recommendations":[{"title":"<5 words>","detail":"<1 sentence with numbers>","priority":"<high|medium|low>"}],"goal_advice":[{"goal":"<name>","advice":"<1 sentence with timeline>"}],"budget_advice":[{"budget":"<name>","advice":"<1 sentence>"}],"action_items":["<max 4 quick wins>"]}`;
 }
 
-/* ── Try a Gemini model, return parsed AIAnalysis or null on failure ─────── */
+/* ── Call one model ─────────────────────────────────────────────────────── */
 async function tryModel(
   model: string,
   prompt: string,
@@ -172,17 +100,17 @@ async function tryModel(
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           responseMimeType: 'application/json',
-          temperature: 0.4,
-          maxOutputTokens: 2048,
+          temperature: 0.3,
+          maxOutputTokens: 900,
         },
       }),
     });
   } catch (e) {
-    return { error: `Network error calling ${model}: ${String(e)}`, status: 502 };
+    return { error: `Network error: ${String(e)}`, status: 502 };
   }
 
   if (!resp.ok) {
-    return { error: `Model ${model} returned ${resp.status}`, status: resp.status };
+    return { error: `${model} → ${resp.status}`, status: resp.status };
   }
 
   const data = await resp.json() as {
@@ -191,53 +119,43 @@ async function tryModel(
   const raw = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
 
   try {
-    const analysis = JSON.parse(raw) as AIAnalysis;
-    return { analysis, modelUsed: model };
+    return { analysis: JSON.parse(raw) as AIAnalysis, modelUsed: model };
   } catch {
     return { error: `${model} returned non-JSON`, status: 502 };
   }
 }
 
-/* ── Main handler ───────────────────────────────────────────────────────── */
-// Always return HTTP 200 so the client can read the JSON body.
-// Errors are communicated via { ok: false, error: "..." } in the body.
+/* ── Handler ────────────────────────────────────────────────────────────── */
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
   if (req.method !== 'POST') return json(200, { ok: false, error: 'Method not allowed' });
 
   const GEMINI_API_KEY = Deno.env.get('GEMINI_API_KEY');
   if (!GEMINI_API_KEY) {
-    return json(200, { ok: false, error: 'GEMINI_API_KEY secret is not set. Add it in the Supabase Dashboard → Edge Functions → Secrets.' });
+    return json(200, { ok: false, error: 'GEMINI_API_KEY secret is not set in Supabase Edge Function secrets.' });
   }
 
   let snapshot: FinancialSnapshot;
   try {
     snapshot = await req.json() as FinancialSnapshot;
   } catch {
-    return json(200, { ok: false, error: 'Invalid request body' });
+    return json(200, { ok: false, error: 'Invalid request body.' });
   }
 
   const prompt = buildPrompt(snapshot);
 
-  // Fallback chain: try models in order, skip 429/quota errors
-  const models = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-8b'];
+  // Cheapest Tier 1 models first; skip on 400/429 and try next
+  const models = ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b', 'gemini-1.5-flash'];
   const errors: string[] = [];
 
   for (const model of models) {
     const result = await tryModel(model, prompt, GEMINI_API_KEY);
-
     if ('analysis' in result) {
       return json(200, { ok: true, analysis: result.analysis, modelUsed: result.modelUsed });
     }
-
-    errors.push(`${model}: ${result.error}`);
-
-    // Only skip to the next model on quota/rate-limit errors (429)
-    if (result.status !== 429) break;
+    errors.push(result.error);
+    if (result.status !== 429 && result.status !== 400) break;
   }
 
-  return json(200, {
-    ok: false,
-    error: `All Gemini models failed. Details: ${errors.join(' | ')}`,
-  });
+  return json(200, { ok: false, error: `All models failed: ${errors.join(' | ')}` });
 });

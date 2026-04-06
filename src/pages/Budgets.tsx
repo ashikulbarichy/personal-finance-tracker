@@ -4,7 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useUserPrefs } from '../contexts/UserPrefsContext';
 import {
   Plus, CreditCard as Edit2, Trash2, AlertTriangle, CheckCircle,
-  ChevronDown, ChevronRight, Receipt, TrendingUp, TrendingDown, Calendar,
+  ChevronDown, ChevronRight, ChevronLeft, Receipt, TrendingUp, TrendingDown, Calendar,
 } from 'lucide-react';
 import type { Database } from '../lib/database.types';
 
@@ -23,6 +23,8 @@ interface BudgetWithDetails extends Budget {
   transaction_groups: { name: string; color: string } | null;
   spent: number;
   transactions: BudgetTransaction[];
+  current_start?: string;
+  current_end?: string;
 }
 
 /* ── Allocated vs Spent horizontal bar ─────────────────────────────────────── */
@@ -46,7 +48,7 @@ function AllocSpentBar({
           </p>
         </div>
         <div className="text-right">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-0.5">Allocated</p>
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-0.5">Plan</p>
           <p className="text-2xl font-bold leading-none text-slate-400">
             {currency} {allocated.toFixed(2)}
           </p>
@@ -133,6 +135,7 @@ export function Budgets() {
   const [editingBudget, setEditingBudget] = useState<Budget | null>(null);
   const [displayCurrency, setDisplayCurrency] = useState('USD');
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [cycleOffsets, setCycleOffsets] = useState<Record<string, number>>({});
   const [formData, setFormData] = useState({
     name: '',
     group_id: '',
@@ -155,8 +158,69 @@ export function Budgets() {
     return date.toISOString().split('T')[0];
   };
 
+  const getCurrentCycle = (startDateStr: string, period: Budget['period'], offset: number = 0) => {
+    if (period === 'one_time') return { start: startDateStr, end: startDateStr };
+    
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    
+    let currentStart = new Date(startDateStr);
+    currentStart.setHours(0, 0, 0, 0);
+    
+    // Initial start logic
+    if (currentStart > now) {
+      // Future budget start
+    } else if (period === 'monthly') {
+      const yearDiff = now.getFullYear() - currentStart.getFullYear();
+      let monthDiff = now.getMonth() - currentStart.getMonth() + (yearDiff * 12);
+      if (now.getDate() < currentStart.getDate()) {
+        monthDiff--;
+      }
+      if (monthDiff < 0) monthDiff = 0;
+      currentStart.setMonth(currentStart.getMonth() + monthDiff);
+    } else {
+      let currentEnd = new Date(currentStart);
+      while (true) {
+        currentEnd = new Date(currentStart);
+        switch (period) {
+          case 'weekly':    currentEnd.setDate(currentEnd.getDate() + 7); break;
+          case 'quarterly': currentEnd.setMonth(currentEnd.getMonth() + 3); break;
+          case 'annual':    currentEnd.setFullYear(currentEnd.getFullYear() + 1); break;
+        }
+        currentEnd.setDate(currentEnd.getDate() - 1);
+        if (now <= currentEnd) break;
+        currentStart = new Date(currentEnd);
+        currentStart.setDate(currentStart.getDate() + 1);
+      }
+    }
+
+    // Apply offset
+    if (offset !== 0) {
+      switch (period) {
+        case 'weekly':    currentStart.setDate(currentStart.getDate() + 7 * offset); break;
+        case 'monthly':   currentStart.setMonth(currentStart.getMonth() + 1 * offset); break;
+        case 'quarterly': currentStart.setMonth(currentStart.getMonth() + 3 * offset); break;
+        case 'annual':    currentStart.setFullYear(currentStart.getFullYear() + 1 * offset); break;
+      }
+    }
+
+    let finalEnd = new Date(currentStart);
+    switch (period) {
+      case 'weekly':    finalEnd.setDate(finalEnd.getDate() + 7); break;
+      case 'monthly':   finalEnd.setMonth(finalEnd.getMonth() + 1); break;
+      case 'quarterly': finalEnd.setMonth(finalEnd.getMonth() + 3); break;
+      case 'annual':    finalEnd.setFullYear(finalEnd.getFullYear() + 1); break;
+    }
+    finalEnd.setDate(finalEnd.getDate() - 1);
+
+    return {
+      start: currentStart.toISOString().split('T')[0],
+      end: finalEnd.toISOString().split('T')[0]
+    };
+  };
+
   const loadData = useCallback(async () => {
-    if (!user) { setBudgets([]); setCategories([]); return; }
+    if (!user) { setBudgets([]); setGroups([]); return; }
 
     const [budgetsRes, groupsRes, profileRes] = await Promise.all([
       supabase.from('budgets').select('*, transaction_groups(name, color)').eq('user_id', user.id).order('created_at', { ascending: false }),
@@ -169,18 +233,33 @@ export function Budgets() {
     if (budgetsRes.data && groupsRes.data) {
       const enriched = await Promise.all(
         budgetsRes.data.map(async (budget) => {
+          let current_start: string | null = null;
+          let current_end: string | null = null;
+
+          if (budget.period !== 'one_time' && budget.start_date) {
+            const offset = cycleOffsets[budget.id] || 0;
+            const cycle = getCurrentCycle(budget.start_date, budget.period, offset);
+            current_start = cycle.start;
+            current_end = cycle.end;
+          }
+
           // Transactions explicitly linked to budget
-          const { data: byBudgetId } = await supabase
+          let byBudgetIdQuery = supabase
             .from('transactions')
             .select('id, title, description, amount, transaction_date')
             .eq('user_id', user.id)
             .eq('budget_id', budget.id)
-            .eq('type', 'expense')
-            .order('transaction_date', { ascending: false });
+            .eq('type', 'expense');
+            
+          if (current_start && current_end) {
+            byBudgetIdQuery = byBudgetIdQuery.gte('transaction_date', current_start).lte('transaction_date', current_end);
+          }
+          
+          const { data: byBudgetId } = await byBudgetIdQuery.order('transaction_date', { ascending: false });
 
           // For recurring budgets: include unlinked expenses in the same group within the date range.
           // For one-time budgets (no dates): only include explicitly linked transactions (budget_id = this budget).
-          const byGroupQuery = (budget.period !== 'one_time' && budget.group_id && budget.start_date && budget.end_date)
+          const byGroupQuery = (budget.period !== 'one_time' && budget.group_id && current_start && current_end)
             ? await supabase
                 .from('transactions')
                 .select('id, title, description, amount, transaction_date')
@@ -188,8 +267,8 @@ export function Budgets() {
                 .eq('group_id', budget.group_id)
                 .eq('type', 'expense')
                 .is('budget_id', null)
-                .gte('transaction_date', budget.start_date)
-                .lte('transaction_date', budget.end_date)
+                .gte('transaction_date', current_start)
+                .lte('transaction_date', current_end)
                 .order('transaction_date', { ascending: false })
             : { data: [] };
 
@@ -200,13 +279,15 @@ export function Budgets() {
             ...budget,
             spent,
             transactions: txList as BudgetTransaction[],
+            current_start,
+            current_end,
           };
         })
       );
       setBudgets(enriched as BudgetWithDetails[]);
       setGroups(groupsRes.data);
     }
-  }, [user]);
+  }, [user, cycleOffsets]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -464,20 +545,24 @@ export function Budgets() {
 
           // Days info (only meaningful for date-ranged budgets)
           const today = new Date();
-          const hasDates = budget.period !== 'one_time' && !!budget.start_date && !!budget.end_date;
-          const start = hasDates ? new Date(budget.start_date as string) : null;
-          const end = hasDates ? new Date(budget.end_date as string) : null;
+          const activeStart = budget.current_start || budget.start_date;
+          const activeEnd = budget.current_end || budget.end_date;
+          const hasDates = budget.period !== 'one_time' && !!activeStart && !!activeEnd;
+          
+          const start = hasDates ? new Date(activeStart as string) : null;
+          const end = hasDates ? new Date(activeEnd as string) : null;
           const totalDays = hasDates && start && end
-            ? Math.max(Math.ceil((end.getTime() - start.getTime()) / 86400000), 1)
+            ? Math.max(Math.ceil((end.getTime() - start.getTime()) / 86400000) + 1, 1)
             : 0;
           const daysElapsed = hasDates && start
-            ? Math.max(Math.ceil((today.getTime() - start.getTime()) / 86400000), 0)
+            ? Math.max(Math.floor((today.getTime() - start.getTime()) / 86400000) + 1, 0)
             : 0;
+          const activeElapsed = Math.min(daysElapsed, totalDays);
           const daysLeft = hasDates && end
             ? Math.max(Math.ceil((end.getTime() - today.getTime()) / 86400000), 0)
             : 0;
           const dailyBudget = hasDates && totalDays > 0 ? allocated / totalDays : 0;
-          const dailyActual = hasDates && daysElapsed > 0 ? budget.spent / daysElapsed : 0;
+          const dailyActual = hasDates && activeElapsed > 0 ? budget.spent / activeElapsed : 0;
           const projectedTotal = hasDates && totalDays > 0 ? dailyActual * totalDays : 0;
 
           return (
@@ -560,13 +645,34 @@ export function Budgets() {
 
                 {/* Date range + transaction count */}
                 <div className="flex items-center justify-between mt-3">
-                  <p className="text-xs text-slate-600">
+                  <div className="flex items-center text-xs text-slate-600 gap-2">
                     {hasDates ? (
-                      <>{fmt(budget.start_date)} – {fmt(budget.end_date)}</>
+                      <>
+                        <div className="flex items-center bg-slate-800/40 border border-slate-700/50 rounded overflow-hidden">
+                          <button 
+                            onClick={() => setCycleOffsets(prev => ({ ...prev, [budget.id]: (prev[budget.id] || 0) - 1 }))}
+                            className="p-1 hover:bg-slate-700/50 transition-colors text-slate-400"
+                          >
+                            <ChevronLeft size={12} />
+                          </button>
+                          <span className="font-medium text-slate-400 px-1">
+                            {(cycleOffsets[budget.id] || 0) === 0 ? 'Current Cycle' : 
+                             (cycleOffsets[budget.id] || 0) < 0 ? `${Math.abs(cycleOffsets[budget.id] || 0)} Ago` : 
+                             `+${cycleOffsets[budget.id]}`}
+                          </span>
+                          <button 
+                            onClick={() => setCycleOffsets(prev => ({ ...prev, [budget.id]: (prev[budget.id] || 0) + 1 }))}
+                            className="p-1 hover:bg-slate-700/50 transition-colors text-slate-400"
+                          >
+                            <ChevronRight size={12} />
+                          </button>
+                        </div>
+                        <span>{fmt(activeStart as string)} – {fmt(activeEnd as string)}</span>
+                      </>
                     ) : (
                       <span className="text-slate-500">No date range</span>
                     )}
-                  </p>
+                  </div>
                   {budget.transactions.length > 0 && (
                     <button
                       onClick={() => setExpandedId(isExpanded ? null : budget.id)}

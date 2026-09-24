@@ -4,7 +4,9 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { useUserPrefs } from '../contexts/UserPrefsContext';
 import type { Database } from '../lib/database.types';
-import { ArrowLeft } from 'lucide-react';
+import { ChevronLeft } from 'lucide-react';
+import { Button, PageHeader, KpiStrip, Kpi, SectionTitle, Progress, Badge, EmptyState, Skeleton, cx } from '../components/ui';
+import { formatMoney } from '../lib/money';
 
 type Loan = Database['public']['Tables']['loans']['Row'];
 type Account = Database['public']['Tables']['accounts']['Row'];
@@ -22,7 +24,7 @@ export function LoanDetails() {
   const [displayCurrency, setDisplayCurrency] = useState('USD');
   const [loading, setLoading] = useState(true);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (quiet = false) => {
     if (!user || !id) {
       setLoan(null);
       setAccounts([]);
@@ -31,7 +33,7 @@ export function LoanDetails() {
       return;
     }
 
-    setLoading(true);
+    if (!quiet) setLoading(true);
 
     const [loanRes, accountsRes, paymentsRes, profileRes] = await Promise.all([
       supabase.from('loans').select('*').eq('id', id).eq('user_id', user.id).single(),
@@ -45,7 +47,7 @@ export function LoanDetails() {
       supabase.from('profiles').select('default_currency').eq('id', user.id).single(),
     ]);
 
-    if (loanRes.data) setLoan(loanRes.data);
+    setLoan(loanRes.data ?? null);
     if (accountsRes.data) setAccounts(accountsRes.data);
     if (paymentsRes.data) setPayments(paymentsRes.data);
     setDisplayCurrency(profileRes.data?.default_currency || 'USD');
@@ -55,6 +57,9 @@ export function LoanDetails() {
 
   useEffect(() => {
     loadData();
+    const onChange = () => loadData(true);
+    window.addEventListener('ft-data-changed', onChange);
+    return () => window.removeEventListener('ft-data-changed', onChange);
   }, [loadData]);
 
   const accountsById = useMemo(
@@ -66,193 +71,132 @@ export function LoanDetails() {
     [accounts]
   );
 
-  if (loading) {
-    return <div className="px-4 py-4 md:px-8 md:py-8 text-slate-400">Loading loan details…</div>;
-  }
+  const wrapper = 'px-5 md:px-8 pt-3 md:pt-7 pb-8 md:pb-[120px] flex flex-col gap-6 md:gap-7';
+  const backLink = (
+    <Button variant="ghost" size="sm" onClick={() => navigate('/loans')} className="hidden md:inline-flex self-start -mb-4">
+      <ChevronLeft size={16} />
+      Loans
+    </Button>
+  );
 
-  if (!loan) {
+  if (loading) {
     return (
-      <div className="px-4 py-4 md:px-8 md:py-8">
-        <button
-          type="button"
-          onClick={() => navigate('/loans')}
-          className="inline-flex items-center gap-1 text-sm font-medium text-slate-400 hover:text-slate-100 transition-colors mb-4"
-        >
-          <ArrowLeft size={16} className="mr-1" />
-          Back to loans
-        </button>
-        <p className="text-slate-500">Loan not found.</p>
+      <div className={wrapper}>
+        <Skeleton className="h-10 w-56" />
+        <Skeleton className="h-24" />
+        <Skeleton className="h-48" />
       </div>
     );
   }
 
+  if (!loan) {
+    return (
+      <div className={wrapper}>
+        {backLink}
+        <EmptyState title="Loan not found" description="It may have been deleted." />
+      </div>
+    );
+  }
+
+  const cur = (loan.account_id && accountsById[loan.account_id]?.currency) || displayCurrency;
   const principal = Number(loan.principal_amount ?? 0);
   const balance = Number(loan.current_balance);
   const repaid = Math.max(0, principal - balance);
-  const percentage = principal > 0 ? (repaid / principal) * 100 : 0;
+  const percentage = principal > 0 ? Math.min(100, (repaid / principal) * 100) : 0;
   const isCompleted = principal > 0 && balance <= 0;
+  const owe = loan.type === 'borrowing';
+  const d = new Date();
+  const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const overdue = !isCompleted && !!loan.due_date && loan.due_date < today;
+  const linked = loan.account_id ? accountsById[loan.account_id] : undefined;
 
   return (
-    <div className="px-4 py-4 md:px-8 md:py-8 space-y-6">
-      <button
-        type="button"
-        onClick={() => navigate('/loans')}
-        className="inline-flex items-center gap-1 text-sm font-medium text-slate-400 hover:text-slate-100 transition-colors"
-      >
-        <ArrowLeft size={16} className="mr-1" />
-        Back to loans
-      </button>
+    <div className={wrapper}>
+      {backLink}
+      <PageHeader
+        title={loan.name}
+        description={owe ? `I owe · ${loan.lender_borrower}` : `Owed to me · ${loan.lender_borrower}`}
+        actions={isCompleted ? <Badge>{owe ? 'Paid off' : 'Settled'}</Badge> : undefined}
+      />
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className={`bg-[#141927] p-6 rounded-lg border lg:col-span-1 ${isCompleted ? 'border-green-300 opacity-70' : 'border-slate-800'}`}>
-          <div className="flex items-center gap-2 flex-wrap mb-1">
-            <h3 className={`text-lg font-semibold ${isCompleted ? 'line-through text-slate-600' : 'text-slate-100'}`}>
-              {loan.name}
-            </h3>
-            {isCompleted && (
-              <span className="text-[10px] font-semibold uppercase tracking-wide text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
-                Paid off
-              </span>
-            )}
-          </div>
-          <p className="text-sm text-slate-500 mb-3 capitalize">
-            {loan.type === 'borrowing' ? 'Borrowing (I owe)' : 'Lending (owed to me)'}
-          </p>
-          <div className="space-y-2 text-sm text-slate-300">
-            <p>
-              <span className="font-medium">
-                {loan.type === 'borrowing' ? 'Lender' : 'Borrower'}:
-              </span>{' '}
-              {loan.lender_borrower}
-            </p>
-            <p>
-              <span className="font-medium">Principal:</span> {displayCurrency}{' '}
-              {principal.toFixed(2)}
-            </p>
-            <p>
-              <span className="font-medium">Current Balance:</span>{' '}
-              <span className={isCompleted ? 'text-emerald-400 font-semibold' : ''}>
-                {isCompleted
-                  ? 'Paid off'
-                  : `${displayCurrency} ${balance.toFixed(2)}`}
-              </span>
-            </p>
-            <p>
-              <span className="font-medium">Interest rate:</span>{' '}
-              {Number(loan.interest_rate).toFixed(2)}%
-            </p>
-            {loan.due_date && (
-              <p>
-                <span className="font-medium">Due date:</span>{' '}
-                {fmt(loan.due_date)}
-              </p>
-            )}
-          </div>
+      <KpiStrip cols={3}>
+        <Kpi
+          label={owe ? 'Remaining' : 'Outstanding'}
+          value={formatMoney(Math.max(balance, 0), cur)}
+          note={isCompleted ? (owe ? 'Paid off' : 'Settled') : `of ${formatMoney(principal, cur)}`}
+        />
+        <Kpi label="Repaid" value={formatMoney(repaid, cur)} note={`${Math.round(percentage)}% of principal`} />
+        <Kpi
+          label="Due"
+          value={loan.due_date ? fmt(loan.due_date) : '—'}
+          note={overdue ? 'Overdue' : linked ? `Linked to ${linked.name}` : undefined}
+          noteTone={overdue ? 'accent' : 'muted'}
+        />
+      </KpiStrip>
+
+      <section className="flex flex-col gap-2">
+        <div className="flex justify-between text-xs">
+          <span className="font-semibold text-slate-100">{isCompleted ? '100% repaid' : `${percentage.toFixed(1)}% repaid`}</span>
+          <span className="text-slate-400 tabular-nums">
+            {formatMoney(repaid, cur)} of {formatMoney(principal, cur)}
+          </span>
         </div>
-        <div className="bg-[#141927] p-6 rounded-xl border border-slate-800 lg:col-span-2">
-          <h4 className="text-sm font-semibold text-slate-100 mb-4">Repayment Progress</h4>
+        <Progress value={percentage} height={8} className="!bg-slate-800" />
+      </section>
 
-          <div className="grid grid-cols-3 gap-3 mb-4">
-            <div className="bg-slate-800/40 rounded-lg p-3 text-center">
-              <p className="text-xs text-slate-500 mb-1">Principal</p>
-              <p className="text-sm font-semibold text-slate-100">
-                {displayCurrency} {principal.toFixed(2)}
-              </p>
-            </div>
-            <div className="bg-blue-500/10 rounded-lg p-3 text-center">
-              <p className="text-xs text-slate-500 mb-1">Repaid</p>
-              <p className="text-sm font-semibold text-blue-700">
-                {displayCurrency} {repaid.toFixed(2)}
-              </p>
-            </div>
-            <div className={`rounded-lg p-3 text-center ${isCompleted ? 'bg-emerald-500/10' : 'bg-orange-500/10'}`}>
-              <p className="text-xs text-slate-500 mb-1">Current Balance</p>
-              <p className={`text-sm font-semibold ${isCompleted ? 'text-green-700' : 'text-orange-700'}`}>
-                {isCompleted ? 'Paid off' : `${displayCurrency} ${balance.toFixed(2)}`}
-              </p>
-            </div>
-          </div>
+      <section>
+        <SectionTitle meta={`${payments.length} ${payments.length === 1 ? 'entry' : 'entries'}`}>Payment history</SectionTitle>
+        <div className="hidden md:grid grid-cols-[130px_130px_minmax(0,1fr)_150px] gap-4 pb-2 rule-b t-th">
+          <span>Date</span>
+          <span>Type</span>
+          <span>Accounts · notes</span>
+          <span className="text-right">Amount</span>
+        </div>
+        <div className="md:hidden rule-t" />
 
-          <div className="h-3 bg-slate-700 rounded-full overflow-hidden">
-            <div
-              className={`h-full transition-all ${
-                isCompleted
-                  ? 'bg-emerald-500/100'
-                  : loan.type === 'borrowing'
-                  ? 'bg-red-500/100'
-                  : 'bg-blue-500/100'
-              }`}
-              style={{ width: `${Math.min(percentage, 100)}%` }}
-            />
-          </div>
-          <div className="mt-2 text-xs text-slate-500 flex items-center justify-between">
-            <span>Interest: {Number(loan.interest_rate).toFixed(2)}%</span>
-            <span>
-              {isCompleted ? '100% — Fully paid off ✓' : `${percentage.toFixed(1)}% repaid`}
+        {payments.map((p) => {
+          const fromAcc = p.from_account_id ? accountsById[p.from_account_id] : undefined;
+          const toAcc = p.to_account_id ? accountsById[p.to_account_id] : undefined;
+          // Sign from the owner's point of view: money into my pocket is +.
+          const signedAmount =
+            p.payment_type === 'repayment'
+              ? owe ? -Number(p.amount) : Number(p.amount)
+              : owe ? Number(p.amount) : -Number(p.amount);
+          const accountsText = [fromAcc && `From ${fromAcc.name}`, toAcc && `To ${toAcc.name}`].filter(Boolean).join(' → ');
+          const detail = [accountsText, p.notes].filter(Boolean).join(' · ');
+          const typeLabel = p.payment_type === 'repayment' ? 'Repayment' : 'Disbursement';
+          const amount = (
+            <span className={cx('text-[15px] tabular-nums text-slate-100 text-right', signedAmount > 0 ? 'font-extrabold' : 'font-normal')}>
+              {formatMoney(signedAmount, cur, { sign: true })}
             </span>
-          </div>
-        </div>
-      </div>
+          );
 
-      <div className="bg-[#141927] rounded-xl border border-slate-800">
-        <div className="px-4 py-3 border-b border-slate-800">
-          <h3 className="text-sm font-semibold text-slate-100">Payment history</h3>
-        </div>
-        {payments.length === 0 ? (
-          <div className="px-4 py-6 text-sm text-slate-500">
-            No payments recorded for this loan yet.
-          </div>
-        ) : (
-          <div className="divide-y divide-slate-800/60">
-            {payments.map((p) => {
-              const fromAcc = p.from_account_id ? accountsById[p.from_account_id] : undefined;
-              const toAcc = p.to_account_id ? accountsById[p.to_account_id] : undefined;
+          return (
+            <div key={p.id} className="row-rule hover-tint">
+              <div className="hidden md:grid grid-cols-[130px_130px_minmax(0,1fr)_150px] gap-4 items-center min-h-[52px] py-2">
+                <span className="text-[13px] text-slate-400 tabular-nums">{fmt(p.payment_date)}</span>
+                <span className="text-[13px] text-slate-100">{typeLabel}</span>
+                <span className="text-[13px] text-slate-400 truncate">{detail || '—'}</span>
+                {amount}
+              </div>
+              <div className="md:hidden flex items-center justify-between gap-3 min-h-[60px] py-2">
+                <span className="flex flex-col min-w-0">
+                  <span className="text-[15px] font-semibold text-slate-100">{typeLabel}</span>
+                  <span className="text-xs text-slate-400 truncate">
+                    {fmt(p.payment_date)}
+                    {detail ? ` · ${detail}` : ''}
+                  </span>
+                </span>
+                {amount}
+              </div>
+            </div>
+          );
+        })}
 
-              const signedAmount =
-                p.payment_type === 'repayment'
-                  ? loan.type === 'borrowing'
-                    ? -Number(p.amount)
-                    : Number(p.amount)
-                  : loan.type === 'borrowing'
-                  ? Number(p.amount)
-                  : -Number(p.amount);
-
-              return (
-                <div key={p.id} className="px-4 py-3 flex items-start justify-between gap-3">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`text-sm font-semibold ${
-                          signedAmount < 0 ? 'text-red-400' : 'text-emerald-400'
-                        }`}
-                      >
-                        {signedAmount < 0 ? '-' : '+'}
-                        {displayCurrency} {Number(p.amount).toFixed(2)}
-                      </span>
-                      <span className="text-[10px] uppercase text-slate-500">
-                        {p.payment_type === 'repayment' ? 'Repayment' : 'Disbursement'}
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-500">
-                      {fmt(p.payment_date)}
-                      {fromAcc || toAcc ? ' · ' : ''}
-                      {fromAcc && `From ${fromAcc.name}`}
-                      {fromAcc && toAcc && ' → '}
-                      {toAcc && `To ${toAcc.name}`}
-                    </p>
-                    {p.notes && (
-                      <p className="mt-1 text-xs text-slate-500">
-                        {p.notes}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+        {payments.length === 0 && (
+          <EmptyState title="No payments yet" description="Payments recorded from the Loans page will appear here." />
         )}
-      </div>
+      </section>
     </div>
   );
 }
-

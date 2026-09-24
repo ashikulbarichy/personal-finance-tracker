@@ -1,75 +1,112 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { Plus, Trash2, UserCheck, Edit2, Search } from 'lucide-react';
+import { useUserPrefs } from '../contexts/UserPrefsContext';
+import { Plus, Trash2, UserCheck, Pencil, ChevronRight } from 'lucide-react';
+import {
+  Avatar, Button, EmptyState, IconButton, Modal, PageHeader, SearchInput, Skeleton, fieldCls, labelCls,
+} from '../components/ui';
+import { formatMoney } from '../lib/money';
+import { convertManual, loadManualRates } from '../lib/manualRates';
 
 interface Payee {
   id: string;
   name: string;
-  email: string | null;
-  phone: string | null;
-  category: string | null;
   notes: string | null;
-  total_paid: number;
-  // computed on load from transactions (income where this payee is the payer)
-  total_received?: number;
   created_at: string;
 }
 
-const CATEGORY_COLORS: Record<string, string> = {
-  freelancer: '#3b82f6',
-  vendor: '#f59e0b',
-  individual: '#10b981',
-  service: '#8b5cf6',
-  charity: '#ec4899',
-  other: '#64748b',
+interface PayeeStats {
+  paid: number;       // expenses to this payee, default currency
+  received: number;   // income from this payee, default currency
+  count: number;
+  last: string | null;
+  usualCategory: string | null;
+}
+
+type TxnRow = {
+  payee_id: string | null;
+  payer_id: string | null;
+  amount: number;
+  currency: string;
+  type: 'income' | 'expense';
+  transaction_date: string;
+  category_id: string | null;
 };
 
-const emptyForm = { name: '', email: '', phone: '', category: 'individual', notes: '' };
+const emptyForm = { name: '', notes: '' };
 
 export function Payees() {
   const { user } = useAuth();
+  const { defaultCurrency } = useUserPrefs();
+  const navigate = useNavigate();
   const [payees, setPayees] = useState<Payee[]>([]);
+  const [stats, setStats] = useState<Record<string, PayeeStats>>({});
+  // Open loans with each person (default currency): lent → owes you, borrowed → you owe.
+  const [loanBal, setLoanBal] = useState<Record<string, { owesYou: number; youOwe: number }>>({});
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<Payee | null>(null);
   const [formData, setFormData] = useState(emptyForm);
   const [search, setSearch] = useState('');
-  const [currency, setCurrency] = useState('USD');
 
   const load = useCallback(async () => {
     if (!user) { setPayees([]); setLoading(false); return; }
 
-    const [payeesRes, profRes, incomeRes] = await Promise.all([
-      supabase.from('payees').select('*').eq('user_id', user.id).order('total_paid', { ascending: false }),
-      supabase.from('profiles').select('default_currency').eq('id', user.id).single(),
+    const [payeesRes, txnRes, catRes, loanRes] = await Promise.all([
+      supabase.from('payees').select('*').eq('user_id', user.id).order('name'),
       supabase
         .from('transactions')
-        .select('payer_id, amount')
+        .select('payee_id, payer_id, amount, currency, type, transaction_date, category_id')
         .eq('user_id', user.id)
-        .eq('type', 'income')
-        .not('payer_id', 'is', null),
+        .or('payee_id.not.is.null,payer_id.not.is.null'),
+      supabase.from('categories').select('id, name').eq('user_id', user.id),
+      supabase.from('loans').select('payee_id, type, current_balance, is_active, accounts(currency)')
+        .eq('user_id', user.id).not('payee_id', 'is', null),
     ]);
 
-    // Build map of total received amounts per payer (this represents money we received from them)
-    const receivedMap: Record<string, number> = {};
-    (incomeRes.data ?? []).forEach((t: { payer_id: string | null; amount: number }) => {
-      if (!t.payer_id) return;
-      receivedMap[t.payer_id] = (receivedMap[t.payer_id] ?? 0) + Number(t.amount);
+    const rates = loadManualRates(user.id);
+    const catName: Record<string, string> = {};
+    (catRes.data ?? []).forEach((c: { id: string; name: string }) => { catName[c.id] = c.name; });
+
+    const acc: Record<string, PayeeStats & { cats: Record<string, number> }> = {};
+    ((txnRes.data ?? []) as TxnRow[]).forEach((t) => {
+      const pid = t.type === 'income' ? (t.payer_id ?? t.payee_id) : (t.payee_id ?? t.payer_id);
+      if (!pid) return;
+      const e = (acc[pid] ??= { paid: 0, received: 0, count: 0, last: null, usualCategory: null, cats: {} });
+      const v = convertManual(Number(t.amount), t.currency, defaultCurrency, defaultCurrency, rates);
+      if (t.type === 'income') e.received += v; else e.paid += v;
+      e.count += 1;
+      if (!e.last || t.transaction_date > e.last) e.last = t.transaction_date;
+      if (t.category_id) e.cats[t.category_id] = (e.cats[t.category_id] ?? 0) + 1;
+    });
+    const out: Record<string, PayeeStats> = {};
+    Object.entries(acc).forEach(([id, e]) => {
+      const top = Object.entries(e.cats).sort((a, b) => b[1] - a[1])[0];
+      out[id] = { paid: e.paid, received: e.received, count: e.count, last: e.last, usualCategory: top ? catName[top[0]] ?? null : null };
     });
 
-    const basePayees = (payeesRes.data ?? []) as Payee[];
-    const enriched = basePayees.map((p) => ({
-      ...p,
-      total_received: receivedMap[p.id] ?? 0,
-    }));
-
-    setPayees(enriched);
-    setCurrency(profRes.data?.default_currency ?? 'USD');
+    const lb: Record<string, { owesYou: number; youOwe: number }> = {};
+    ((loanRes.data ?? []) as unknown as { payee_id: string; type: 'lending' | 'borrowing'; current_balance: number; is_active: boolean; accounts: { currency: string } | null }[])
+      .forEach((l) => {
+        if (!l.is_active || !(Number(l.current_balance) > 0)) return;
+        const v = convertManual(Number(l.current_balance), l.accounts?.currency ?? defaultCurrency, defaultCurrency, defaultCurrency, rates);
+        const e = (lb[l.payee_id] ??= { owesYou: 0, youOwe: 0 });
+        if (l.type === 'lending') e.owesYou += v; else e.youOwe += v;
+      });
+    setLoanBal(lb);
+    setPayees((payeesRes.data ?? []) as Payee[]);
+    setStats(out);
     setLoading(false);
-  }, [user]);
+  }, [user, defaultCurrency]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    const on = () => load();
+    window.addEventListener('ft-data-changed', on);
+    return () => window.removeEventListener('ft-data-changed', on);
+  }, [load]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -78,9 +115,6 @@ export function Payees() {
     const payload = {
       user_id: user.id,
       name: formData.name,
-      email: formData.email || null,
-      phone: formData.phone || null,
-      category: formData.category || null,
       notes: formData.notes || null,
     };
 
@@ -93,191 +127,192 @@ export function Payees() {
     setShowForm(false);
     setEditing(null);
     setFormData(emptyForm);
-    load();
+    window.dispatchEvent(new Event('ft-data-changed'));
   };
 
   const handleEdit = (p: Payee) => {
     setEditing(p);
-    setFormData({ name: p.name, email: p.email ?? '', phone: p.phone ?? '', category: p.category ?? 'individual', notes: p.notes ?? '' });
+    setFormData({ name: p.name, notes: p.notes ?? '' });
     setShowForm(true);
   };
 
   const handleDelete = async (id: string) => {
     if (confirm('Delete this payee?')) {
       await supabase.from('payees').delete().eq('id', id);
-      load();
+      window.dispatchEvent(new Event('ft-data-changed'));
     }
   };
 
-  const filtered = payees.filter((p) =>
-    p.name.toLowerCase().includes(search.toLowerCase()) ||
-    p.email?.toLowerCase().includes(search.toLowerCase()) ||
-    p.category?.toLowerCase().includes(search.toLowerCase())
-  );
+  const openNew = () => { setShowForm(true); setEditing(null); setFormData(emptyForm); };
 
-  const totalPaid = payees.reduce((s, p) => s + Number(p.total_paid), 0);
-  const totalReceived = payees.reduce((s, p) => s + Number(p.total_received ?? 0), 0);
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return payees
+      .filter((p) =>
+        p.name.toLowerCase().includes(q) ||
+        stats[p.id]?.usualCategory?.toLowerCase().includes(q))
+      .sort((a, b) => (stats[b.id]?.count ?? 0) - (stats[a.id]?.count ?? 0));
+  }, [payees, stats, search]);
 
-  if (loading) return <div className="px-8 py-8 text-slate-400">Loading…</div>;
+  const go = (p: Payee) => navigate(`/transactions?q=${encodeURIComponent(p.name)}`);
+
+  const lastLabel = (d: string | null) =>
+    d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—';
+
+  /** Total shown in the Total column: spend, or +received for pure payers. */
+  const totalOf = (p: Payee) => {
+    const s = stats[p.id];
+    const paid = s?.paid ?? 0;
+    const received = s?.received ?? 0;
+    if (paid > 0) return { text: formatMoney(paid, defaultCurrency), bold: false, received };
+    if (received > 0) return { text: formatMoney(received, defaultCurrency, { sign: true }), bold: true, received: 0 };
+    return { text: '—', bold: false, received: 0 };
+  };
+
+  const cols = 'minmax(0,1.5fr) 160px 120px 150px 90px 68px 24px';
 
   return (
-    <div className="px-4 py-4 md:px-8 md:py-8 space-y-5">
-      {/* Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-gradient-to-br from-blue-600 to-indigo-700 p-5 rounded-xl shadow-lg">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs text-blue-200 font-medium">Total Payees</p>
-              <p className="text-2xl font-bold text-white mt-1">{payees.length}</p>
-              <p className="text-[11px] text-blue-200 mt-1">external recipients</p>
-            </div>
-            <div className="p-2.5 bg-white/20 rounded-xl"><UserCheck className="text-white" size={20} /></div>
-          </div>
+    <div className="px-5 md:px-8 pt-3 md:pt-7 pb-8 md:pb-[120px] flex flex-col gap-5">
+      <PageHeader
+        className="hidden md:flex"
+        description={`${payees.length} payee${payees.length === 1 ? '' : 's'} · click one to see its transactions`}
+        actions={
+          <>
+            <SearchInput className="w-[260px]" placeholder="Find a payee" value={search} onChange={(e) => setSearch(e.target.value)} />
+            <Button variant="secondary" onClick={openNew}><Plus size={16} /> New payee</Button>
+          </>
+        }
+      />
+      {/* phone toolbar */}
+      <div className="md:hidden flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[13px] text-slate-400">{payees.length} payee{payees.length === 1 ? '' : 's'}</span>
+          <Button variant="secondary" size="sm" onClick={openNew}><Plus size={14} /> New payee</Button>
         </div>
-        <div className="bg-[#141927] p-5 rounded-xl border border-slate-800">
-          <p className="text-xs text-slate-400 mb-1">Total Paid Out</p>
-          <p className="text-xl font-bold text-slate-100">{currency} {totalPaid.toFixed(2)}</p>
-          <p className="text-xs text-slate-500 mt-1">across all payees</p>
-        </div>
-        <div className="bg-[#141927] p-5 rounded-xl border border-slate-800">
-          <p className="text-xs text-slate-400 mb-1">Total Received</p>
-          <p className="text-xl font-bold text-emerald-400">{currency} {totalReceived.toFixed(2)}</p>
-          <p className="text-xs text-slate-500 mt-1">from all payers</p>
-        </div>
-        <div className="bg-[#141927] p-5 rounded-xl border border-slate-800">
-          <p className="text-xs text-slate-400 mb-2">By Category</p>
-          <div className="space-y-1">
-            {Object.entries(
-              payees.reduce<Record<string, number>>((acc, p) => {
-                const cat = p.category ?? 'other';
-                acc[cat] = (acc[cat] ?? 0) + 1;
-                return acc;
-              }, {})
-            ).slice(0, 4).map(([cat, cnt]) => (
-              <div key={cat} className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-xs text-slate-400">
-                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: CATEGORY_COLORS[cat] ?? '#64748b' }} />
-                  {cat.charAt(0).toUpperCase() + cat.slice(1)}
-                </span>
-                <span className="text-xs font-semibold text-slate-200">{cnt}</span>
-              </div>
-            ))}
-          </div>
-        </div>
+        <SearchInput placeholder="Find a payee" value={search} onChange={(e) => setSearch(e.target.value)} className="[&_input]:min-h-[44px]" />
       </div>
 
-      {/* Toolbar */}
-      <div className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" size={18} />
-          <input type="text" placeholder="Search payees…" value={search} onChange={(e) => setSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2 bg-slate-800 border border-slate-700 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm" />
+      {loading ? (
+        <div className="rule-t">
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-3 min-h-[56px] row-rule">
+              <Skeleton className="w-8 h-8" />
+              <Skeleton className="h-3.5 w-40" />
+              <Skeleton className="h-3.5 w-20 ml-auto" />
+            </div>
+          ))}
         </div>
-        <button onClick={() => { setShowForm(true); setEditing(null); setFormData(emptyForm); }}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.97] text-white text-sm font-semibold rounded-xl shadow-md shadow-blue-950/40 transition-all">
-          <Plus size={18} /> Add Payee
-        </button>
-      </div>
-
-      {/* Form */}
-      {showForm && (
-        <div className="bg-[#141927] p-5 rounded-xl border border-slate-800">
-          <h3 className="text-sm font-semibold text-slate-100 mb-4">{editing ? 'Edit Payee' : 'New Payee'}</h3>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Name *</label>
-                <input required type="text" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="e.g. John Smith" className="w-full px-3 py-2 bg-slate-800 border border-slate-700 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm" />
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          icon={UserCheck}
+          title={search ? 'No payees match' : 'No payees yet'}
+          description={search ? 'Try a different name.' : 'Add people and companies you regularly pay or get paid by.'}
+          action={!search && <Button variant="secondary" onClick={openNew}><Plus size={16} /> New payee</Button>}
+        />
+      ) : (
+        <div className="rule-t">
+          <div className="hidden md:grid items-center h-[38px] rule-b t-th" style={{ gridTemplateColumns: cols }}>
+            <span>Payee</span><span>Usual category</span><span>Activity</span>
+            <span className="text-right">Total · {defaultCurrency}</span><span className="text-right">Last</span><span /><span />
+          </div>
+          {filtered.map((p) => {
+            const s = stats[p.id];
+            const total = totalOf(p);
+            const cat = s?.usualCategory ?? null;
+            const n = s?.count ?? 0;
+            const lb = loanBal[p.id];
+            const loanLine = lb && (lb.owesYou > 0 || lb.youOwe > 0) ? (
+              <button type="button" onClick={(e) => { e.stopPropagation(); navigate('/loans'); }} className="text-xs tabular-nums text-left hover:underline">
+                {lb.owesYou > 0 && <span className="text-slate-300">Owes you {formatMoney(lb.owesYou, defaultCurrency)}</span>}
+                {lb.owesYou > 0 && lb.youOwe > 0 && <span className="text-slate-400"> · </span>}
+                {lb.youOwe > 0 && <span className="text-red-400">You owe {formatMoney(lb.youOwe, defaultCurrency)}</span>}
+              </button>
+            ) : null;
+            return (
+              <div
+                key={p.id}
+                role="button"
+                tabIndex={0}
+                onClick={() => go(p)}
+                onKeyDown={(e) => { if (e.key === 'Enter') go(p); }}
+                className="row-rule hover-tint cursor-pointer group"
+              >
+                {/* web row */}
+                <div className="hidden md:grid items-center min-h-[52px]" style={{ gridTemplateColumns: cols }}>
+                  <span className="flex items-center gap-3 min-w-0">
+                    <Avatar name={p.name} />
+                    <span className="flex flex-col leading-[1.3] min-w-0">
+                      <span className="text-sm font-semibold text-slate-100 truncate">{p.name}</span>
+                      {loanLine}
+                    </span>
+                  </span>
+                  <span className="text-[13px] text-slate-400 truncate pr-2">{cat ?? '—'}</span>
+                  <span className="text-[13px] text-slate-300">{n} payment{n === 1 ? '' : 's'}</span>
+                  <span className="text-right flex flex-col leading-[1.3]">
+                    <span className={total.bold ? 'text-sm tabular-nums text-slate-100 font-bold' : 'text-sm tabular-nums text-slate-100'}>{total.text}</span>
+                    {total.received > 0 && (
+                      <span className="text-xs tabular-nums text-slate-400">{formatMoney(total.received, defaultCurrency, { sign: true })} in</span>
+                    )}
+                  </span>
+                  <span className="text-right text-[13px] text-slate-400">{lastLabel(s?.last ?? null)}</span>
+                  <span className="flex justify-end gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                    <IconButton bordered={false} className="w-8 h-8" aria-label="Edit payee"
+                      onClick={(e) => { e.stopPropagation(); handleEdit(p); }}><Pencil size={14} /></IconButton>
+                    <IconButton bordered={false} className="w-8 h-8 text-red-400" aria-label="Delete payee"
+                      onClick={(e) => { e.stopPropagation(); handleDelete(p.id); }}><Trash2 size={14} /></IconButton>
+                  </span>
+                  <span className="grid place-items-center text-slate-400"><ChevronRight size={14} /></span>
+                </div>
+                {/* phone row */}
+                <div className="md:hidden grid grid-cols-[38px_minmax(0,1fr)_auto_36px] gap-3 items-center min-h-[60px]">
+                  <Avatar name={p.name} size={38} />
+                  <span className="flex flex-col leading-[1.3] min-w-0">
+                    <span className="text-[15px] font-semibold text-slate-100 truncate">{p.name}</span>
+                    <span className="text-xs text-slate-400 truncate">{cat ? `${cat} · ` : ''}{n} payment{n === 1 ? '' : 's'}</span>
+                    {loanLine}
+                  </span>
+                  <span className={total.bold ? 'text-sm tabular-nums text-slate-100 font-bold' : 'text-sm tabular-nums text-slate-100'}>{total.text}</span>
+                  <IconButton bordered={false} aria-label="Edit payee" className="-mr-2"
+                    onClick={(e) => { e.stopPropagation(); handleEdit(p); }}><Pencil size={14} className="text-slate-400" /></IconButton>
+                </div>
               </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Category</label>
-                <select value={formData.category} onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-700 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm">
-                  <option value="individual">Individual</option>
-                  <option value="vendor">Vendor</option>
-                  <option value="freelancer">Freelancer</option>
-                  <option value="service">Service</option>
-                  <option value="charity">Charity</option>
-                  <option value="other">Other</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Email</label>
-                <input type="email" value={formData.email} onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  placeholder="email@example.com" className="w-full px-3 py-2 bg-slate-800 border border-slate-700 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm" />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-400 mb-1">Phone</label>
-                <input type="tel" value={formData.phone} onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                  placeholder="+1 555 000 0000" className="w-full px-3 py-2 bg-slate-800 border border-slate-700 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm" />
-              </div>
-              <div className="md:col-span-2">
-                <label className="block text-xs font-medium text-slate-400 mb-1">Notes</label>
-                <input type="text" value={formData.notes} onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-                  placeholder="Optional note about this payee" className="w-full px-3 py-2 bg-slate-800 border border-slate-700 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm" />
-              </div>
-            </div>
-            <div className="flex gap-3">
-              <button type="submit" className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl transition-all">{editing ? 'Update' : 'Create'}</button>
-              <button type="button" onClick={() => { setShowForm(false); setEditing(null); }} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm rounded-xl border border-slate-700 transition-all">Cancel</button>
-            </div>
-          </form>
+            );
+          })}
         </div>
       )}
 
-      {/* List */}
-      <div className="bg-[#141927] rounded-xl border border-slate-800 overflow-hidden">
-        {filtered.length === 0 ? (
-          <div className="py-16 text-center">
-            <UserCheck className="mx-auto mb-3 text-slate-700" size={40} />
-            <p className="text-sm text-slate-500">No payees yet</p>
-            <p className="text-xs text-slate-600 mt-1">Add people and companies you regularly pay</p>
+      {/* Form */}
+      <Modal
+        open={showForm}
+        onClose={() => { setShowForm(false); setEditing(null); }}
+        title={editing ? 'Edit payee' : 'New payee'}
+        maxWidth="max-w-md"
+        footer={
+          <>
+            {editing && (
+              <Button variant="danger" className="mr-auto"
+                onClick={() => { const id = editing.id; setShowForm(false); setEditing(null); handleDelete(id); }}>
+                <Trash2 size={14} /> Delete
+              </Button>
+            )}
+            <Button variant="secondary" type="button" onClick={() => { setShowForm(false); setEditing(null); }}>Cancel</Button>
+            <Button type="submit" form="payee-form">{editing ? 'Update' : 'Create'}</Button>
+          </>
+        }
+      >
+        <form id="payee-form" onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className={labelCls}>Name *</label>
+            <input required type="text" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              placeholder="e.g. John Smith" className={fieldCls} />
           </div>
-        ) : (
-          <div className="divide-y divide-slate-800">
-            {filtered.map((p) => {
-              const color = CATEGORY_COLORS[p.category ?? 'other'] ?? '#64748b';
-              return (
-                <div key={p.id} className="flex items-center justify-between px-5 py-4 hover:bg-slate-800/30 gap-3">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold shrink-0"
-                      style={{ backgroundColor: `${color}22`, color }}>
-                      {p.name.charAt(0).toUpperCase()}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-slate-100 truncate">{p.name}</p>
-                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                        {p.category && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded font-medium capitalize"
-                            style={{ backgroundColor: `${color}22`, color }}>{p.category}</span>
-                        )}
-                        {p.email && <span className="text-[10px] text-slate-500 truncate">{p.email}</span>}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-4 shrink-0">
-                    <div className="text-right">
-                      <p className="text-sm font-bold text-slate-100">
-                        {currency} {Number(p.total_paid).toFixed(2)}
-                      </p>
-                      <p className="text-[10px] text-slate-500">total paid</p>
-                      <p className="text-sm font-bold text-emerald-400 mt-1">
-                        {currency} {Number(p.total_received ?? 0).toFixed(2)}
-                      </p>
-                      <p className="text-[10px] text-slate-500">total received</p>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <button onClick={() => handleEdit(p)} className="p-1.5 text-slate-600 hover:text-blue-400 hover:bg-blue-400/10 rounded-lg transition-colors"><Edit2 size={14} /></button>
-                      <button onClick={() => handleDelete(p.id)} className="p-1.5 text-slate-600 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors"><Trash2 size={14} /></button>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+          <div>
+            <label className={labelCls}>Notes</label>
+            <input type="text" value={formData.notes} onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+              placeholder="Optional note about this payee" className={fieldCls} />
           </div>
-        )}
-      </div>
+        </form>
+      </Modal>
     </div>
   );
 }

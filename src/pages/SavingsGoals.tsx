@@ -2,7 +2,10 @@ import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { useUserPrefs } from '../contexts/UserPrefsContext';
-import { Plus, CreditCard as Edit2, Trash2, TrendingUp } from 'lucide-react';
+import { Plus, Pencil, Trash2, Undo2, X, Target } from 'lucide-react';
+import { Button, IconButton, PageHeader, EmptyState, ListSkeleton, Modal, Input, Select, Progress, burst, fieldCls, labelCls, cx, useToast } from '../components/ui';
+import { milestoneCrossed } from '../lib/notifications';
+import { formatMoney, currencySymbol } from '../lib/money';
 import type { Database } from '../lib/database.types';
 
 type SavingsGoal = Database['public']['Tables']['savings_goals']['Row'];
@@ -27,17 +30,33 @@ function suggestTimeline(deadline: string): GoalTimeline {
   return 'long_term';
 }
 
-export function SavingsGoals() {
+const notifyChanged = () => window.dispatchEvent(new Event('ft-data-changed'));
+
+/** Months left until the deadline (at least 1), or null if no/past deadline. */
+function monthsUntil(deadline: string | null): number | null {
+  if (!deadline) return null;
+  const today = new Date();
+  const deadlineDate = new Date(deadline);
+  if (!(deadlineDate > today)) return null;
+  let months = (deadlineDate.getFullYear() - today.getFullYear()) * 12 + (deadlineDate.getMonth() - today.getMonth());
+  if (deadlineDate.getDate() > today.getDate()) months += 1;
+  return Math.max(1, months);
+}
+
+export function SavingsGoals({ embedded = false }: { embedded?: boolean } = {}) {
   const { user } = useAuth();
   const { fmt } = useUserPrefs();
   const [goals, setGoals] = useState<SavingsGoal[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [allocations, setAllocations] = useState<SavingsAllocation[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editingGoal, setEditingGoal] = useState<SavingsGoal | null>(null);
-  const [showAllocateModal, setShowAllocateModal] = useState<SavingsGoal | null>(null);
+  // Inline "Add money" state (one goal at a time)
+  const [addingId, setAddingId] = useState<string | null>(null);
   const [allocateAmount, setAllocateAmount] = useState('');
   const [allocateAccountId, setAllocateAccountId] = useState('');
+  const [saving, setSaving] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     timeline: 'short_term' as GoalTimeline,
@@ -71,10 +90,14 @@ export function SavingsGoals() {
     if (goalsRes.data) setGoals(goalsRes.data);
     if (accountsRes.data) setAccounts(accountsRes.data);
     if (allocationsRes.data) setAllocations(allocationsRes.data);
+    setLoaded(true);
   }, [user]);
 
   useEffect(() => {
     loadData();
+    const onChange = () => loadData();
+    window.addEventListener('ft-data-changed', onChange);
+    return () => window.removeEventListener('ft-data-changed', onChange);
   }, [loadData]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -101,20 +124,35 @@ export function SavingsGoals() {
     setEditingGoal(null);
     resetForm();
     loadData();
+    notifyChanged();
   };
 
-  const handleAllocate = async () => {
-    if (!showAllocateModal || !allocateAmount || !allocateAccountId || !user) return;
+  const startAdding = (goal: SavingsGoal) => {
+    setAddingId(goal.id);
+    setAllocateAmount('');
+    setAllocateAccountId((prev) => (prev && accounts.some((a) => a.id === prev) ? prev : accounts[0]?.id ?? ''));
+  };
+
+  const cancelAdding = () => {
+    setAddingId(null);
+    setAllocateAmount('');
+  };
+
+  const toast = useToast();
+
+  const handleAllocate = async (goal: SavingsGoal, from?: HTMLElement) => {
+    if (!allocateAmount || !allocateAccountId || !user) return;
 
     const amount = parseFloat(allocateAmount);
     if (!amount || amount <= 0) return;
 
-    const newAmount = Number(showAllocateModal.current_amount) + amount;
-    const isCompleted = newAmount >= Number(showAllocateModal.target_amount);
+    setSaving(true);
+    const newAmount = Number(goal.current_amount) + amount;
+    const isCompleted = newAmount >= Number(goal.target_amount);
 
     const { error: allocError } = await supabase.from('savings_goal_allocations').insert({
       user_id: user.id,
-      goal_id: showAllocateModal.id,
+      goal_id: goal.id,
       account_id: allocateAccountId,
       amount,
     });
@@ -126,13 +164,23 @@ export function SavingsGoals() {
           current_amount: newAmount,
           is_completed: isCompleted,
         })
-        .eq('id', showAllocateModal.id);
+        .eq('id', goal.id);
     }
 
-    setShowAllocateModal(null);
-    setAllocateAmount('');
-    setAllocateAccountId('');
+    setSaving(false);
+    cancelAdding();
     loadData();
+    notifyChanged();
+
+    // Celebrate crossing 25 / 50 / 75 / 100%.
+    if (!allocError) {
+      const m = milestoneCrossed(Number(goal.current_amount), newAmount, Number(goal.target_amount));
+      if (m) {
+        const r = from?.getBoundingClientRect();
+        burst(r ? r.left + Math.min(r.width / 2, 160) : undefined, r ? r.top + r.height / 2 : undefined);
+        toast.show(m === 100 ? `${goal.name} is fully funded. Well done!` : `${goal.name} passed ${m}% — keep going.`);
+      }
+    }
   };
 
   // Undo a single allocation (revert the amount from the goal)
@@ -165,6 +213,7 @@ export function SavingsGoals() {
     }
 
     loadData();
+    notifyChanged();
   };
 
   const resetForm = () => {
@@ -176,6 +225,17 @@ export function SavingsGoals() {
       deadline: '',
       account_id: '',
     });
+  };
+
+  const openNew = () => {
+    setShowForm(true);
+    setEditingGoal(null);
+    resetForm();
+  };
+
+  const closeForm = () => {
+    setShowForm(false);
+    setEditingGoal(null);
   };
 
   const handleEdit = (goal: SavingsGoal) => {
@@ -204,11 +264,10 @@ export function SavingsGoals() {
 
       await supabase.from('savings_goals').delete().eq('id', id);
       loadData();
+      notifyChanged();
     }
   };
 
-  const totalSaved = goals.reduce((sum, g) => sum + Number(g.current_amount), 0);
-  const totalTarget = goals.reduce((sum, g) => sum + Number(g.target_amount), 0);
   const [displayCurrency, setDisplayCurrency] = useState('USD');
 
   useEffect(() => {
@@ -227,336 +286,270 @@ export function SavingsGoals() {
     loadCurrency();
   }, [user]);
 
-  return (
-    <div className="px-4 py-4 md:px-8 md:py-8 space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-[#141927] p-6 rounded-xl border border-slate-800">
-          <p className="text-sm text-slate-400">Total Saved</p>
-          <p className="text-3xl font-bold text-emerald-400 mt-1">
-            {displayCurrency} {totalSaved.toFixed(2)}
-          </p>
-        </div>
-        <div className="bg-[#141927] p-6 rounded-xl border border-slate-800">
-          <p className="text-sm text-slate-400">Total Target</p>
-          <p className="text-3xl font-bold text-slate-100 mt-1">
-            {displayCurrency} {totalTarget.toFixed(2)}
-          </p>
-        </div>
-      </div>
+  const cur = displayCurrency;
+  const newGoalButton = (
+    <Button variant="secondary" onClick={openNew}>
+      <Plus size={16} /> New goal
+    </Button>
+  );
+  // Filler cells keep the 3-col ruled grid solid when the last row is short.
+  const fillers = goals.length % 3 === 0 ? 0 : 3 - (goals.length % 3);
 
-      <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-slate-100">Savings Goals</h3>
-        <button
-          onClick={() => {
-            setShowForm(true);
-            setEditingGoal(null);
-            resetForm();
-          }}
-          className="flex items-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.97] text-white text-sm font-semibold rounded-xl shadow-md shadow-blue-950/40 transition-all duration-150"
+  const body = (
+    <>
+      {goals.length > 0 && (
+        <div
+          className={cx(
+            'flex flex-col gap-3',
+            'md:grid md:grid-cols-2 lg:grid-cols-3 md:gap-[2px] md:bg-line-strong md:rule-t md:rule-b',
+          )}
         >
-          <Plus size={20} />
-          <span>Add Goal</span>
-        </button>
-      </div>
+          {goals.map((goal) => {
+            const saved = Number(goal.current_amount);
+            const target = Number(goal.target_amount);
+            const percentage = target > 0 ? (saved / target) * 100 : 0;
+            const remaining = Math.max(0, target - saved);
+            const done = goal.is_completed || (target > 0 && saved >= target);
+            const months = done ? null : monthsUntil(goal.deadline);
+            const monthlyNeeded = months && remaining > 0 ? remaining / months : null;
+            const lastAllocation = allocations.find((a) => a.goal_id === goal.id);
+            const timeline = TIMELINE_LABEL[(goal.timeline ?? 'short_term') as GoalTimeline];
+            const adding = addingId === goal.id;
 
-      {showForm && (
-        <div className="bg-[#141927] p-6 rounded-xl border border-slate-800">
-          <h3 className="text-lg font-semibold text-slate-100 mb-4">
-            {editingGoal ? 'Edit Savings Goal' : 'New Savings Goal'}
-          </h3>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Goal Name</label>
-                <input
-                  type="text"
-                  required
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="e.g., Emergency Fund"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
-                  Goal Type (Timeline)
-                </label>
-                <select
-                  value={formData.timeline}
-                  onChange={(e) => setFormData({ ...formData, timeline: e.target.value as GoalTimeline })}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="short_term">Short term</option>
-                  <option value="mid_term">Mid term</option>
-                  <option value="long_term">Long term</option>
-                </select>
-                {formData.deadline && (
-                  <p className="text-xs text-slate-500 mt-1">
-                    Suggested: <span className="font-semibold text-slate-300">{TIMELINE_LABEL[suggestTimeline(formData.deadline)]}</span>
-                  </p>
+            let need: React.ReactNode;
+            if (done) need = 'Goal reached — nicely done.';
+            else if (monthlyNeeded !== null)
+              need = (
+                <>
+                  Save <span className="font-bold tabular-nums">{formatMoney(monthlyNeeded, cur)}</span>/month to finish by {fmt(goal.deadline)}
+                </>
+              );
+            else if (goal.deadline) need = <>The deadline has passed · <span className="tabular-nums">{formatMoney(remaining, cur)}</span> to go</>;
+            else need = 'No deadline set — add one to see a monthly amount.';
+
+            return (
+              <div
+                key={goal.id}
+                className={cx(
+                  'bg-surface p-4 flex flex-col gap-3',
+                  'md:bg-app md:p-[22px] md:gap-3.5',
+                  'md:[&:nth-child(2n+1)]:pl-0 lg:[&:nth-child(2n+1)]:pl-[22px] lg:[&:nth-child(3n+1)]:!pl-0',
                 )}
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
-                  Target Amount
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  required
-                  value={formData.target_amount}
-                  onChange={(e) => setFormData({ ...formData, target_amount: e.target.value })}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
-                  Current Amount
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  required
-                  value={formData.current_amount}
-                  onChange={(e) => setFormData({ ...formData, current_amount: e.target.value })}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
-                  Deadline (Optional)
-                </label>
-                <input
-                  type="date"
-                  value={formData.deadline}
-                  onChange={(e) => {
-                    const deadline = e.target.value;
-                    setFormData((prev) => ({
-                      ...prev,
-                      deadline,
-                      // if user hasn't edited timeline yet, keep default; otherwise they can override manually
-                      timeline: prev.timeline || (deadline ? suggestTimeline(deadline) : 'short_term'),
-                    }));
-                  }}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-            </div>
-            <div className="flex space-x-3">
-              <button
-                type="submit"
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.97] text-white text-sm font-semibold rounded-xl shadow-md shadow-blue-950/40 transition-all duration-150"
               >
-                {editingGoal ? 'Update' : 'Create'}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowForm(false);
-                  setEditingGoal(null);
-                }}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 active:scale-[0.97] text-slate-300 text-sm font-medium rounded-xl border border-slate-700/60 transition-all duration-150"
-              >
-                Cancel
-              </button>
-            </div>
-          </form>
-        </div>
-      )}
-
-      {showAllocateModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-[#141927] p-6 rounded-lg max-w-md w-full">
-            <h3 className="text-lg font-semibold text-slate-100 mb-4">
-              Allocate Money to {showAllocateModal.name}
-            </h3>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Amount</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={allocateAmount}
-                  onChange={(e) => setAllocateAmount(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="Enter amount to allocate"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
-                  From Account
-                </label>
-                <select
-                  value={allocateAccountId}
-                  onChange={(e) => setAllocateAccountId(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-800 border border-slate-600 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="">Select account</option>
-                  {accounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="flex space-x-3">
-                <button
-                  onClick={handleAllocate}
-                  className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.97] text-white text-sm font-semibold rounded-xl shadow-md shadow-blue-950/40 transition-all duration-150"
-                >
-                  Allocate
-                </button>
-                <button
-                  onClick={() => {
-                    setShowAllocateModal(null);
-                    setAllocateAmount('');
-                    setAllocateAccountId('');
-                  }}
-                  className="flex-1 px-4 py-2 bg-slate-800 hover:bg-slate-700 active:scale-[0.97] text-slate-300 text-sm font-medium rounded-xl border border-slate-700/60 transition-all duration-150"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {goals.map((goal) => {
-          const percentage = (Number(goal.current_amount) / Number(goal.target_amount)) * 100;
-          const remaining = Number(goal.target_amount) - Number(goal.current_amount);
-
-          const goalAllocations = allocations.filter((a) => a.goal_id === goal.id);
-          const lastAllocation = goalAllocations[0];
-
-          let monthlyNeeded: number | null = null;
-          if (!goal.is_completed && goal.deadline) {
-            const today = new Date();
-            const deadlineDate = new Date(goal.deadline);
-            if (deadlineDate > today && remaining > 0) {
-              const yearDiff = deadlineDate.getFullYear() - today.getFullYear();
-              const monthDiff = deadlineDate.getMonth() - today.getMonth();
-              let months = yearDiff * 12 + monthDiff;
-              if (deadlineDate.getDate() > today.getDate()) {
-                months += 1;
-              }
-              if (months < 1) {
-                months = 1;
-              }
-              monthlyNeeded = remaining / months;
-            }
-          }
-
-          return (
-            <div
-              key={goal.id}
-              className={`bg-[#141927] p-6 rounded-lg border-2 ${
-                goal.is_completed ? 'border-green-500' : 'border-slate-800'
-              }`}
-            >
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h4 className="font-semibold text-slate-100">{goal.name}</h4>
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700">
-                      {TIMELINE_LABEL[(goal.timeline ?? 'short_term') as GoalTimeline]}
+                <div className="flex justify-between items-baseline gap-2">
+                  <span className="text-[17px] md:text-[19px] font-extrabold text-slate-100 min-w-0 truncate">{goal.name}</span>
+                  <span className="text-xs text-slate-400 shrink-0">
+                    {goal.deadline ? `by ${fmt(goal.deadline)}` : timeline}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-2xl md:text-[30px] font-extrabold tracking-[-0.02em] tabular-nums text-slate-100">
+                    {formatMoney(saved, cur)}
+                  </span>
+                  <span className="text-[13px] md:text-sm text-slate-400">
+                    {' '}of <span className="tabular-nums">{formatMoney(target, cur)}</span>
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Progress value={percentage} tone="accent" height={8} className="!bg-slate-800 md:!bg-slate-900" />
+                  <div className="hidden md:flex justify-between text-xs">
+                    <span className="font-bold text-slate-100">{Math.round(Math.min(percentage, 100))}%</span>
+                    <span className="text-slate-400 tabular-nums">
+                      {done ? 'Complete' : `${formatMoney(remaining, cur)} left`}
                     </span>
                   </div>
-                  {goal.deadline && (
-                    <p className="text-xs text-slate-500 mt-1">
-                      Due: {fmt(goal.deadline)}
-                    </p>
-                  )}
                 </div>
-                <div className="flex space-x-2">
-                  <button
-                    onClick={() => setShowAllocateModal(goal)}
-                    className="p-2 text-slate-500 hover:text-emerald-400 hover:bg-emerald-400/10 rounded-lg transition-all"
+                <div className="text-[13px] md:text-sm text-slate-100 md:py-2.5 md:border-y md:border-line">{need}</div>
+
+                {adding ? (
+                  <form
+                    className="flex flex-col gap-2"
+                    onSubmit={(e) => { e.preventDefault(); handleAllocate(goal, e.currentTarget); }}
                   >
-                    <TrendingUp size={16} />
-                  </button>
-                  <button
-                    onClick={() => handleEdit(goal)}
-                    className="p-2 text-slate-500 hover:text-blue-600"
-                  >
-                    <Edit2 size={16} />
-                  </button>
-                  <button
-                    onClick={() => handleDelete(goal.id)}
-                    className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-all"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-slate-400">Progress</span>
-                  <span className="font-semibold">
-                    {displayCurrency} {Number(goal.current_amount).toFixed(2)} /{' '}
-                    {displayCurrency} {Number(goal.target_amount).toFixed(2)}
-                  </span>
-                </div>
-
-                <div className="h-3 bg-slate-700 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full transition-all ${
-                      goal.is_completed ? 'bg-emerald-500/100' : 'bg-blue-500/100'
-                    }`}
-                    style={{ width: `${Math.min(percentage, 100)}%` }}
-                  />
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-slate-500">
-                    {goal.is_completed
-                      ? 'Completed!'
-                      : `${displayCurrency} ${remaining.toFixed(2)} remaining`}
-                  </span>
-                  <span className="text-xs text-slate-500">{percentage.toFixed(1)}%</span>
-                </div>
-
-                {!goal.is_completed && monthlyNeeded !== null && (
-                  <div className="mt-1 text-xs text-slate-500">
-                    Need to save approximately{' '}
-                    <span className="font-semibold">
-                      {displayCurrency} {monthlyNeeded.toFixed(2)}
-                    </span>{' '}
-                    per month to reach this goal.
-                  </div>
-                )}
-
-                {/* Undo last allocation helper */}
-                {lastAllocation && (
-                  <div className="mt-3 pt-3 border-t border-slate-800/70 flex items-center justify-between">
-                    <div className="text-[11px] text-slate-500">
-                      Last allocation:{' '}
-                      <span className="font-semibold text-slate-200">
-                        {displayCurrency} {Number(lastAllocation.amount).toFixed(2)}
-                      </span>
+                    <div className="flex gap-2">
+                      <div className="relative flex-1 min-w-0">
+                        <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-sm text-slate-400 pointer-events-none">
+                          {currencySymbol(cur).trim()}
+                        </span>
+                        <input
+                          autoFocus
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          inputMode="decimal"
+                          value={allocateAmount}
+                          onChange={(e) => setAllocateAmount(e.target.value)}
+                          placeholder="Amount"
+                          className={cx(fieldCls, 'pl-8 h-11 md:h-9 tabular-nums')}
+                        />
+                      </div>
+                      <Button type="submit" disabled={saving || !allocateAmount || !allocateAccountId} className="h-11 md:h-9">
+                        Add
+                      </Button>
+                      <IconButton aria-label="Cancel" onClick={cancelAdding} className="w-11 h-11 md:w-9 md:h-9">
+                        <X size={14} />
+                      </IconButton>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => handleUndoAllocation(goal, lastAllocation)}
-                      className="text-[11px] px-2 py-1 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 hover:text-amber-300 transition-colors"
-                    >
-                      Undo last
-                    </button>
+                    {accounts.length > 0 ? (
+                      <Select
+                        aria-label="From account"
+                        value={allocateAccountId}
+                        onChange={(e) => setAllocateAccountId(e.target.value)}
+                        className="h-11 md:h-9"
+                      >
+                        {accounts.map((account) => (
+                          <option key={account.id} value={account.id}>
+                            From {account.name}
+                          </option>
+                        ))}
+                      </Select>
+                    ) : (
+                      <span className="text-xs text-red-400">Add an account first — money is reserved from an account.</span>
+                    )}
+                  </form>
+                ) : (
+                  <div className="flex items-center gap-1">
+                    <Button variant="secondary" onClick={() => startAdding(goal)} className="h-11 md:h-9 flex-1 md:flex-none !justify-start md:!justify-center bg-app md:bg-transparent">
+                      <Plus size={16} /> Add money
+                    </Button>
+                    <span className="flex-1 hidden md:block" />
+                    {lastAllocation && (
+                      <IconButton
+                        bordered={false}
+                        aria-label={`Undo last ${formatMoney(Number(lastAllocation.amount), cur)}`}
+                        title={`Undo last (${formatMoney(Number(lastAllocation.amount), cur)})`}
+                        onClick={() => handleUndoAllocation(goal, lastAllocation)}
+                        className="w-11 h-11 md:w-9 md:h-9 text-slate-400"
+                      >
+                        <Undo2 size={15} />
+                      </IconButton>
+                    )}
+                    <IconButton bordered={false} aria-label="Edit goal" onClick={() => handleEdit(goal)} className="w-11 h-11 md:w-9 md:h-9 text-slate-400">
+                      <Pencil size={15} />
+                    </IconButton>
+                    <IconButton bordered={false} aria-label="Delete goal" onClick={() => handleDelete(goal.id)} className="w-11 h-11 md:w-9 md:h-9 text-slate-400 hover:text-red-400">
+                      <Trash2 size={15} />
+                    </IconButton>
                   </div>
                 )}
               </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {goals.length === 0 && !showForm && (
-        <div className="text-center py-12 text-slate-500">
-          <p>No savings goals yet. Create your first goal to start saving.</p>
+            );
+          })}
+          {Array.from({ length: fillers }).map((_, i) => (
+            <div key={`f${i}`} aria-hidden className="hidden lg:block bg-app" />
+          ))}
+          {goals.length % 2 === 1 && <div aria-hidden className="hidden md:block lg:hidden bg-app" />}
         </div>
       )}
+
+      {!loaded && <ListSkeleton rows={3} />}
+
+      {loaded && goals.length === 0 && (
+        <EmptyState
+          icon={Target}
+          title="No goals yet"
+          description="Create a goal and add money as you go — we'll work out the monthly amount."
+          action={
+            <Button onClick={openNew}>
+              <Plus size={16} /> New goal
+            </Button>
+          }
+        />
+      )}
+
+      <Modal open={showForm} onClose={closeForm} title={editingGoal ? 'Edit goal' : 'New goal'} maxWidth="max-w-xl">
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className={labelCls}>Goal name</label>
+              <Input
+                type="text"
+                required
+                value={formData.name}
+                onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                placeholder="e.g., Emergency Fund"
+              />
+            </div>
+            <div>
+              <label className={labelCls}>Goal type (timeline)</label>
+              <Select
+                value={formData.timeline}
+                onChange={(e) => setFormData({ ...formData, timeline: e.target.value as GoalTimeline })}
+              >
+                <option value="short_term">Short term</option>
+                <option value="mid_term">Mid term</option>
+                <option value="long_term">Long term</option>
+              </Select>
+              {formData.deadline && (
+                <p className="text-xs text-slate-400 mt-1">
+                  Suggested: <span className="font-semibold text-slate-300">{TIMELINE_LABEL[suggestTimeline(formData.deadline)]}</span>
+                </p>
+              )}
+            </div>
+            <div>
+              <label className={labelCls}>Target amount</label>
+              <Input
+                type="number"
+                step="0.01"
+                required
+                value={formData.target_amount}
+                onChange={(e) => setFormData({ ...formData, target_amount: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className={labelCls}>Current amount</label>
+              <Input
+                type="number"
+                step="0.01"
+                required
+                value={formData.current_amount}
+                onChange={(e) => setFormData({ ...formData, current_amount: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className={labelCls}>Deadline (optional)</label>
+              <Input
+                type="date"
+                value={formData.deadline}
+                onChange={(e) => {
+                  const deadline = e.target.value;
+                  setFormData((prev) => ({
+                    ...prev,
+                    deadline,
+                    // if user hasn't edited timeline yet, keep default; otherwise they can override manually
+                    timeline: prev.timeline || (deadline ? suggestTimeline(deadline) : 'short_term'),
+                  }));
+                }}
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button type="button" variant="secondary" onClick={closeForm}>
+              Cancel
+            </Button>
+            <Button type="submit">{editingGoal ? 'Update' : 'Create'}</Button>
+          </div>
+        </form>
+      </Modal>
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[13px] text-slate-400">Monthly amounts update as you add money</span>
+          {newGoalButton}
+        </div>
+        {body}
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-5 md:px-8 pt-3 md:pt-7 pb-8 md:pb-[120px] flex flex-col gap-5 md:gap-6">
+      <PageHeader description="Monthly amounts update as you add money" actions={newGoalButton} />
+      {body}
     </div>
   );
 }

@@ -6,7 +6,7 @@ export type Json =
   | { [key: string]: Json | undefined }
   | Json[]
 
-export type Database = {
+export interface Database {
   public: {
     Tables: {
       profiles: {
@@ -15,11 +15,13 @@ export type Database = {
           email: string
           full_name: string | null
           profession: string | null
-          default_currency: string | null
-          enabled_currencies: string[] | null
+          default_currency: string
+          enabled_currencies: string[]
           timezone: string
           date_format: string
-          country_code: string | null
+          avatar_path: string | null
+          manual_rates: Json
+          monthly_save_target: number | null
           created_at: string
           updated_at: string
         }
@@ -28,11 +30,13 @@ export type Database = {
           email: string
           full_name?: string | null
           profession?: string | null
-          default_currency?: string | null
-          enabled_currencies?: string[] | null
+          default_currency?: string
+          enabled_currencies?: string[]
           timezone?: string
           date_format?: string
-          country_code?: string | null
+          avatar_path?: string | null
+          manual_rates?: Json
+          monthly_save_target?: number | null
           created_at?: string
           updated_at?: string
         }
@@ -41,12 +45,104 @@ export type Database = {
           email?: string
           full_name?: string | null
           profession?: string | null
-          default_currency?: string | null
-          enabled_currencies?: string[] | null
+          default_currency?: string
+          enabled_currencies?: string[]
           timezone?: string
           date_format?: string
-          country_code?: string | null
+          avatar_path?: string | null
+          manual_rates?: Json
+          monthly_save_target?: number | null
           created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      account_valuations: {
+        Row: {
+          id: string
+          user_id: string
+          account_id: string
+          value: number
+          as_of: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          account_id: string
+          value: number
+          as_of?: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          account_id?: string
+          value?: number
+          as_of?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
+      tax_payments: {
+        Row: {
+          id: string
+          user_id: string
+          tax_year: string
+          kind: 'tds' | 'advance' | 'with_return' | 'other'
+          description: string | null
+          amount: number
+          paid_on: string
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          tax_year: string
+          kind: 'tds' | 'advance' | 'with_return' | 'other'
+          description?: string | null
+          amount: number
+          paid_on?: string
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          user_id?: string
+          tax_year?: string
+          kind?: 'tds' | 'advance' | 'with_return' | 'other'
+          description?: string | null
+          amount?: number
+          paid_on?: string
+          created_at?: string
+        }
+        Relationships: []
+      }
+      net_worth_snapshots: {
+        Row: {
+          user_id: string
+          month: string
+          net_worth: number
+          assets: number
+          liabilities: number
+          currency: string
+          updated_at: string
+        }
+        Insert: {
+          user_id: string
+          month: string
+          net_worth: number
+          assets: number
+          liabilities: number
+          currency: string
+          updated_at?: string
+        }
+        Update: {
+          user_id?: string
+          month?: string
+          net_worth?: number
+          assets?: number
+          liabilities?: number
+          currency?: string
           updated_at?: string
         }
         Relationships: []
@@ -56,10 +152,15 @@ export type Database = {
           id: string
           user_id: string
           name: string
-          type: 'checking' | 'savings' | 'credit_card' | 'cash' | 'investment' | 'multi_currency' | 'mfs'
+          type: 'checking' | 'savings' | 'credit_card' | 'virtual_card' | 'cash' | 'investment' | 'mfs' | 'multi_currency'
           balance: number
           currency: string
           is_active: boolean
+          current_value: number | null
+          value_updated_at: string | null
+          investment_kind: 'startup' | 'savings_certificate' | 'dps' | 'fdr' | 'stocks' | 'fund' | 'crypto' | 'gold' | 'property' | 'land' | 'vehicle' | 'valuables' | 'other' | null
+          maturity_date: string | null
+          tax_rebate: boolean
           created_at: string
           updated_at: string
         }
@@ -67,10 +168,15 @@ export type Database = {
           id?: string
           user_id: string
           name: string
-          type: 'checking' | 'savings' | 'credit_card' | 'cash' | 'investment' | 'multi_currency' | 'mfs'
+          type: 'checking' | 'savings' | 'credit_card' | 'virtual_card' | 'cash' | 'investment' | 'mfs' | 'multi_currency'
           balance?: number
           currency?: string
           is_active?: boolean
+          current_value?: number | null
+          value_updated_at?: string | null
+          investment_kind?: 'startup' | 'savings_certificate' | 'dps' | 'fdr' | 'stocks' | 'fund' | 'crypto' | 'gold' | 'property' | 'land' | 'vehicle' | 'valuables' | 'other' | null
+          maturity_date?: string | null
+          tax_rebate?: boolean
           created_at?: string
           updated_at?: string
         }
@@ -78,10 +184,15 @@ export type Database = {
           id?: string
           user_id?: string
           name?: string
-          type?: 'checking' | 'savings' | 'credit_card' | 'cash' | 'investment' | 'multi_currency' | 'mfs'
+          type?: 'checking' | 'savings' | 'credit_card' | 'virtual_card' | 'cash' | 'investment' | 'mfs' | 'multi_currency'
           balance?: number
           currency?: string
           is_active?: boolean
+          current_value?: number | null
+          value_updated_at?: string | null
+          investment_kind?: 'startup' | 'savings_certificate' | 'dps' | 'fdr' | 'stocks' | 'fund' | 'crypto' | 'gold' | 'property' | 'land' | 'vehicle' | 'valuables' | 'other' | null
+          maturity_date?: string | null
+          tax_rebate?: boolean
           created_at?: string
           updated_at?: string
         }
@@ -128,40 +239,12 @@ export type Database = {
           },
         ]
       }
-      tags: {
-        Row: {
-          id: string
-          user_id: string
-          name: string
-          color: string
-          created_at: string
-        }
-        Insert: {
-          id?: string
-          user_id: string
-          name: string
-          color?: string
-          created_at?: string
-        }
-        Update: {
-          id?: string
-          user_id?: string
-          name?: string
-          color?: string
-          created_at?: string
-        }
-        Relationships: []
-      }
       payees: {
         Row: {
           id: string
           user_id: string
           name: string
-          email: string | null
-          phone: string | null
-          category: string | null
           notes: string | null
-          total_paid: number
           created_at: string
           updated_at: string
         }
@@ -169,11 +252,7 @@ export type Database = {
           id?: string
           user_id: string
           name: string
-          email?: string | null
-          phone?: string | null
-          category?: string | null
           notes?: string | null
-          total_paid?: number
           created_at?: string
           updated_at?: string
         }
@@ -181,11 +260,7 @@ export type Database = {
           id?: string
           user_id?: string
           name?: string
-          email?: string | null
-          phone?: string | null
-          category?: string | null
           notes?: string | null
-          total_paid?: number
           created_at?: string
           updated_at?: string
         }
@@ -197,25 +272,23 @@ export type Database = {
           user_id: string
           account_id: string
           category_id: string | null
-          loan_payment_id: string | null
-          budget_id: string | null
           payee_id: string | null
           payer_id: string | null
+          transfer_pair_id: string | null
+          split_group_id: string | null
+          loan_payment_id: string | null
           amount: number
           type: 'income' | 'expense'
           currency: string
           custom_rate: number | null
-          transfer_pair_id: string | null
           charge_amount: number | null
-          tax_country_code: string | null
-          tax_status: string | null
           title: string
           description: string | null
           transaction_date: string
           timezone: string | null
-          tags: string[]
-          group_id: string | null
           notes: string | null
+          receipt_path: string | null
+          is_adjustment: boolean
           created_at: string
           updated_at: string
         }
@@ -224,25 +297,23 @@ export type Database = {
           user_id: string
           account_id: string
           category_id?: string | null
-          loan_payment_id?: string | null
-          budget_id?: string | null
           payee_id?: string | null
           payer_id?: string | null
+          transfer_pair_id?: string | null
+          split_group_id?: string | null
+          loan_payment_id?: string | null
           amount: number
           type: 'income' | 'expense'
           currency?: string
           custom_rate?: number | null
-          transfer_pair_id?: string | null
           charge_amount?: number | null
-          tax_country_code?: string | null
-          tax_status?: string | null
-          title?: string
+          title: string
           description?: string | null
           transaction_date?: string
           timezone?: string | null
-          tags?: string[]
-          group_id?: string | null
           notes?: string | null
+          receipt_path?: string | null
+          is_adjustment?: boolean
           created_at?: string
           updated_at?: string
         }
@@ -251,43 +322,27 @@ export type Database = {
           user_id?: string
           account_id?: string
           category_id?: string | null
-          loan_payment_id?: string | null
-          budget_id?: string | null
           payee_id?: string | null
           payer_id?: string | null
+          transfer_pair_id?: string | null
+          split_group_id?: string | null
+          loan_payment_id?: string | null
           amount?: number
           type?: 'income' | 'expense'
           currency?: string
           custom_rate?: number | null
-          transfer_pair_id?: string | null
           charge_amount?: number | null
-          tax_country_code?: string | null
-          tax_status?: string | null
           title?: string
           description?: string | null
           transaction_date?: string
           timezone?: string | null
-          tags?: string[]
-          group_id?: string | null
           notes?: string | null
+          receipt_path?: string | null
+          is_adjustment?: boolean
           created_at?: string
           updated_at?: string
         }
         Relationships: [
-          {
-            foreignKeyName: 'transactions_payee_id_fkey'
-            columns: ['payee_id']
-            isOneToOne: false
-            referencedRelation: 'payees'
-            referencedColumns: ['id']
-          },
-          {
-            foreignKeyName: 'transactions_payer_id_fkey'
-            columns: ['payer_id']
-            isOneToOne: false
-            referencedRelation: 'payees'
-            referencedColumns: ['id']
-          },
           {
             foreignKeyName: 'transactions_account_id_fkey'
             columns: ['account_id']
@@ -303,10 +358,24 @@ export type Database = {
             referencedColumns: ['id']
           },
           {
-            foreignKeyName: 'transactions_group_id_fkey'
-            columns: ['group_id']
+            foreignKeyName: 'transactions_payee_id_fkey'
+            columns: ['payee_id']
             isOneToOne: false
-            referencedRelation: 'transaction_groups'
+            referencedRelation: 'payees'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'transactions_payer_id_fkey'
+            columns: ['payer_id']
+            isOneToOne: false
+            referencedRelation: 'payees'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'transactions_loan_payment_id_fkey'
+            columns: ['loan_payment_id']
+            isOneToOne: false
+            referencedRelation: 'loan_payments'
             referencedColumns: ['id']
           },
         ]
@@ -315,123 +384,45 @@ export type Database = {
         Row: {
           id: string
           user_id: string
-          group_id: string | null
-          name: string
-          amount: number
-          period: 'weekly' | 'monthly' | 'quarterly' | 'annual' | 'one_time'
-          start_date: string | null
-          end_date: string | null
-          rollover: boolean
-          created_at: string
-          updated_at: string
-        }
-        Insert: {
-          id?: string
-          user_id: string
-          group_id?: string | null
-          name: string
-          amount: number
-          period: 'weekly' | 'monthly' | 'quarterly' | 'annual' | 'one_time'
-          start_date?: string | null
-          end_date?: string | null
-          rollover?: boolean
-          created_at?: string
-          updated_at?: string
-        }
-        Update: {
-          id?: string
-          user_id?: string
-          group_id?: string | null
-          name?: string
-          amount?: number
-          period?: 'weekly' | 'monthly' | 'quarterly' | 'annual' | 'one_time'
-          start_date?: string | null
-          end_date?: string | null
-          rollover?: boolean
-          created_at?: string
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: 'budgets_group_id_fkey'
-            columns: ['group_id']
-            isOneToOne: false
-            referencedRelation: 'transaction_groups'
-            referencedColumns: ['id']
-          },
-        ]
-      }
-      subscriptions: {
-        Row: {
-          id: string
-          user_id: string
-          name: string
-          provider: string | null
-          plan: string | null
+          category_id: string
+          period_type: 'monthly' | 'yearly'
+          period_start: string
+          period_end: string
           amount: number
           currency: string
-          billing_cycle: 'weekly' | 'monthly' | 'quarterly' | 'yearly'
-          category_id: string | null
-          account_id: string | null
-          start_date: string | null
-          renewal_date: string | null
-          website: string | null
-          notes: string | null
-          is_active: boolean
           created_at: string
           updated_at: string
         }
         Insert: {
           id?: string
           user_id: string
-          name: string
-          provider?: string | null
-          plan?: string | null
+          category_id: string
+          period_type: 'monthly' | 'yearly'
+          period_start: string
+          period_end: string
           amount: number
           currency?: string
-          billing_cycle?: 'weekly' | 'monthly' | 'quarterly' | 'yearly'
-          category_id?: string | null
-          account_id?: string | null
-          start_date?: string | null
-          renewal_date?: string | null
-          website?: string | null
-          notes?: string | null
-          is_active?: boolean
           created_at?: string
           updated_at?: string
         }
         Update: {
           id?: string
           user_id?: string
-          name?: string
-          provider?: string | null
-          plan?: string | null
+          category_id?: string
+          period_type?: 'monthly' | 'yearly'
+          period_start?: string
+          period_end?: string
           amount?: number
           currency?: string
-          billing_cycle?: 'weekly' | 'monthly' | 'quarterly' | 'yearly'
-          category_id?: string | null
-          account_id?: string | null
-          start_date?: string | null
-          renewal_date?: string | null
-          website?: string | null
-          notes?: string | null
-          is_active?: boolean
           created_at?: string
           updated_at?: string
         }
         Relationships: [
           {
-            foreignKeyName: 'subscriptions_category_id_fkey'
+            foreignKeyName: 'budgets_category_id_fkey'
             columns: ['category_id']
             isOneToOne: false
             referencedRelation: 'categories'
-            referencedColumns: ['id']
-          },
-          {
-            foreignKeyName: 'subscriptions_account_id_fkey'
-            columns: ['account_id']
-            isOneToOne: false
-            referencedRelation: 'accounts'
             referencedColumns: ['id']
           },
         ]
@@ -442,12 +433,17 @@ export type Database = {
           user_id: string
           account_id: string
           category_id: string | null
-          subscription_id: string | null
+          payee_id: string | null
           name: string
           amount: number
           type: 'income' | 'expense'
           frequency: 'daily' | 'weekly' | 'monthly' | 'yearly'
+          interval_count: number
           next_date: string
+          end_type: 'never' | 'on_date' | 'after_occurrences'
+          end_date: string | null
+          max_occurrences: number | null
+          occurrences_count: number
           is_active: boolean
           description: string | null
           created_at: string
@@ -458,12 +454,17 @@ export type Database = {
           user_id: string
           account_id: string
           category_id?: string | null
-          subscription_id?: string | null
+          payee_id?: string | null
           name: string
           amount: number
           type: 'income' | 'expense'
           frequency: 'daily' | 'weekly' | 'monthly' | 'yearly'
+          interval_count?: number
           next_date: string
+          end_type?: 'never' | 'on_date' | 'after_occurrences'
+          end_date?: string | null
+          max_occurrences?: number | null
+          occurrences_count?: number
           is_active?: boolean
           description?: string | null
           created_at?: string
@@ -474,12 +475,17 @@ export type Database = {
           user_id?: string
           account_id?: string
           category_id?: string | null
-          subscription_id?: string | null
+          payee_id?: string | null
           name?: string
           amount?: number
           type?: 'income' | 'expense'
           frequency?: 'daily' | 'weekly' | 'monthly' | 'yearly'
+          interval_count?: number
           next_date?: string
+          end_type?: 'never' | 'on_date' | 'after_occurrences'
+          end_date?: string | null
+          max_occurrences?: number | null
+          occurrences_count?: number
           is_active?: boolean
           description?: string | null
           created_at?: string
@@ -501,10 +507,10 @@ export type Database = {
             referencedColumns: ['id']
           },
           {
-            foreignKeyName: 'recurring_transactions_subscription_id_fkey'
-            columns: ['subscription_id']
+            foreignKeyName: 'recurring_transactions_payee_id_fkey'
+            columns: ['payee_id']
             isOneToOne: false
-            referencedRelation: 'subscriptions'
+            referencedRelation: 'payees'
             referencedColumns: ['id']
           },
         ]
@@ -610,9 +616,9 @@ export type Database = {
           type: 'lending' | 'borrowing'
           principal_amount: number
           current_balance: number
-          interest_rate: number
           lender_borrower: string
           due_date: string | null
+          payee_id: string | null
           is_active: boolean
           created_at: string
           updated_at: string
@@ -625,9 +631,9 @@ export type Database = {
           type: 'lending' | 'borrowing'
           principal_amount: number
           current_balance: number
-          interest_rate?: number
           lender_borrower: string
           due_date?: string | null
+          payee_id?: string | null
           is_active?: boolean
           created_at?: string
           updated_at?: string
@@ -640,9 +646,9 @@ export type Database = {
           type?: 'lending' | 'borrowing'
           principal_amount?: number
           current_balance?: number
-          interest_rate?: number
           lender_borrower?: string
           due_date?: string | null
+          payee_id?: string | null
           is_active?: boolean
           created_at?: string
           updated_at?: string
@@ -717,178 +723,6 @@ export type Database = {
             referencedColumns: ['id']
           },
         ]
-      }
-      automation_rules: {
-        Row: {
-          id: string
-          user_id: string
-          name: string
-          description: string | null
-          is_active: boolean
-          trigger_type: string
-          trigger_conditions: Json
-          action_type: string
-          action_params: Json
-          execution_count: number
-          last_executed_at: string | null
-          created_at: string
-        }
-        Insert: {
-          id?: string
-          user_id: string
-          name: string
-          description?: string | null
-          is_active?: boolean
-          trigger_type: string
-          trigger_conditions?: Json
-          action_type: string
-          action_params?: Json
-          execution_count?: number
-          last_executed_at?: string | null
-          created_at?: string
-        }
-        Update: {
-          id?: string
-          user_id?: string
-          name?: string
-          description?: string | null
-          is_active?: boolean
-          trigger_type?: string
-          trigger_conditions?: Json
-          action_type?: string
-          action_params?: Json
-          execution_count?: number
-          last_executed_at?: string | null
-          created_at?: string
-        }
-        Relationships: []
-      }
-      automation_logs: {
-        Row: {
-          id: string
-          user_id: string
-          rule_id: string
-          trigger_data: Json | null
-          action_taken: string
-          success: boolean
-          error_message: string | null
-          executed_at: string
-        }
-        Insert: {
-          id?: string
-          user_id: string
-          rule_id: string
-          trigger_data?: Json | null
-          action_taken: string
-          success?: boolean
-          error_message?: string | null
-          executed_at?: string
-        }
-        Update: {
-          id?: string
-          user_id?: string
-          rule_id?: string
-          trigger_data?: Json | null
-          action_taken?: string
-          success?: boolean
-          error_message?: string | null
-          executed_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: 'automation_logs_rule_id_fkey'
-            columns: ['rule_id']
-            isOneToOne: false
-            referencedRelation: 'automation_rules'
-            referencedColumns: ['id']
-          },
-        ]
-      }
-      transaction_groups: {
-        Row: {
-          id: string
-          user_id: string
-          name: string
-          color: string
-          created_at: string
-        }
-        Insert: {
-          id?: string
-          user_id: string
-          name: string
-          color?: string
-          created_at?: string
-        }
-        Update: {
-          id?: string
-          user_id?: string
-          name?: string
-          color?: string
-          created_at?: string
-        }
-        Relationships: []
-      }
-      user_tax_residency_periods: {
-        Row: {
-          id: string
-          user_id: string
-          country_code: string
-          start_date: string
-          end_date: string | null
-          tax_status: string | null
-          created_at: string
-        }
-        Insert: {
-          id?: string
-          user_id: string
-          country_code: string
-          start_date: string
-          end_date?: string | null
-          tax_status?: string | null
-          created_at?: string
-        }
-        Update: {
-          id?: string
-          user_id?: string
-          country_code?: string
-          start_date?: string
-          end_date?: string | null
-          tax_status?: string | null
-          created_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: 'user_tax_residency_periods_user_id_fkey'
-            columns: ['user_id']
-            isOneToOne: false
-            referencedRelation: 'profiles'
-            referencedColumns: ['id']
-          },
-        ]
-      }
-      exchange_rates: {
-        Row: {
-          base_currency: string
-          rates: Record<string, number>
-          provider: string
-          fetched_at: string
-          expires_at: string
-        }
-        Insert: {
-          base_currency: string
-          rates: Record<string, number>
-          provider?: string
-          fetched_at?: string
-          expires_at?: string
-        }
-        Update: {
-          base_currency?: string
-          rates?: Record<string, number>
-          provider?: string
-          fetched_at?: string
-          expires_at?: string
-        }
-        Relationships: []
       }
     }
     Views: Record<never, never>

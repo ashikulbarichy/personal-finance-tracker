@@ -1,17 +1,23 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { X, ArrowRight, UserCheck, Trash2, RefreshCw } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { X, Trash2, Check, ChevronDown, Plus, Camera } from 'lucide-react';
 import { supabase } from '../../lib/supabase';
 import { useAuth } from '../../contexts/AuthContext';
 import { useUserPrefs } from '../../contexts/UserPrefsContext';
 import { nowInTZ, tzLocalToUTC, utcToLocalInput } from '../../lib/dateUtils';
+import { currencySymbol, formatMoney } from '../../lib/money';
+import { loadManualRates } from '../../lib/manualRates';
+import { compressImage, mediaPath, removeImages, signedUrl, uploadImage } from '../../lib/media';
+import { markFresh } from '../../lib/fresh';
+import { Badge, Button, IconButton, SegmentedControl, cx, fieldCls, labelCls, useToast } from '../ui';
 import type { Database } from '../../lib/database.types';
+
+const popCls = 'absolute z-[80] w-full mt-1 bg-app border border-line-strong shadow-ds-md p-1 max-h-[260px] overflow-auto';
+const optCls = 'w-full flex items-center justify-between gap-2 px-2 py-[7px] text-left text-sm text-slate-100 hover:bg-slate-100/[0.07] transition-colors';
 
 type Transaction = Database['public']['Tables']['transactions']['Row'];
 type Account = Database['public']['Tables']['accounts']['Row'];
 type Category = Database['public']['Tables']['categories']['Row'];
-type Tag = Database['public']['Tables']['tags']['Row'];
-type Group = Database['public']['Tables']['transaction_groups']['Row'];
-type Budget = Database['public']['Tables']['budgets']['Row'];
 type Payee = Database['public']['Tables']['payees']['Row'];
 
 /* ─── Generic Combobox (search + select) ─────────────────────────────────── */
@@ -54,13 +60,11 @@ function SelectCombobox({
     ? items.filter((i) => i.label.toLowerCase().includes(query.toLowerCase()))
     : items.slice(0, 10);
 
-  const inputCls = 'w-full px-3 py-2 bg-slate-800 border border-slate-700 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm placeholder-slate-500';
-
   return (
     <div ref={ref} className="relative">
       <div className="relative">
         {icon && (
-          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none">
+          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
             {icon}
           </span>
         )}
@@ -70,32 +74,32 @@ function SelectCombobox({
           onChange={(e) => { setQuery(e.target.value); setOpen(true); if (value) onSelect(''); }}
           onFocus={() => setOpen(true)}
           placeholder={placeholder}
-          className={`${inputCls} ${icon ? 'pl-9' : ''} pr-8`}
+          className={cx(fieldCls, !!icon && 'pl-9', 'pr-8')}
         />
         {(value || query) && (
           <button
             type="button"
             onClick={() => { setOpen(false); setQuery(''); onSelect(''); }}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-xs"
+            className="absolute right-1 top-1/2 -translate-y-1/2 w-7 h-7 grid place-items-center text-slate-400 hover:text-slate-100"
             aria-label="Clear"
             title="Clear"
           >
-            ✕
+            <X size={14} />
           </button>
         )}
       </div>
 
       {open && filtered.length > 0 && (
-        <div className="absolute z-[60] w-full mt-1 bg-[#1a2234] border border-slate-700 rounded-xl shadow-2xl overflow-hidden">
+        <div className={popCls}>
           {filtered.map((i) => (
             <button
               key={i.id}
               type="button"
               onMouseDown={() => { onSelect(i.id); setOpen(false); }}
-              className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-slate-800 transition-colors text-left"
+              className={cx(optCls, i.id === value && 'bg-slate-100/[0.04]')}
             >
-              <span className="text-sm text-slate-200">{i.label}</span>
-              {i.meta && <span className="text-[10px] text-slate-500">{i.meta}</span>}
+              <span className="truncate">{i.label}</span>
+              {i.meta && <span className="text-xs text-slate-400 capitalize shrink-0">{i.meta}</span>}
             </button>
           ))}
         </div>
@@ -114,6 +118,10 @@ export interface TransactionFormModalProps {
   editingTransaction?: Transaction | null;
   /** Provide to open the form in edit mode for a transfer pair */
   editingTransfer?: { fromLeg: Transaction; toLeg: Transaction } | null;
+  /** New transfer: pre-select the destination (e.g. pay a card, fund an investment). */
+  initialToAccountId?: string;
+  /** New transaction: pre-fill the title. */
+  initialTitle?: string;
 }
 
 /* ─── Payee Combobox ─────────────────────────────────────────────────────── */
@@ -124,9 +132,10 @@ interface PayeeComboboxProps {
   onInputChange: (text: string) => void;
   onSelect: (id: string, name: string) => void;
   onClear: () => void;
+  placeholder?: string;
 }
 
-function PayeeCombobox({ payees, value, inputValue, onInputChange, onSelect, onClear }: PayeeComboboxProps) {
+function PayeeCombobox({ payees, value, inputValue, onInputChange, onSelect, onClear, placeholder = 'Who was it?' }: PayeeComboboxProps) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -145,60 +154,90 @@ function PayeeCombobox({ payees, value, inputValue, onInputChange, onSelect, onC
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const inputCls = 'w-full px-3 py-2 bg-slate-800 border border-slate-700 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm placeholder-slate-500';
-
   return (
     <div ref={ref} className="relative">
       <div className="relative">
-        <UserCheck size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
         <input
           type="text"
-          placeholder="Search or type payee name…"
+          placeholder={placeholder}
           value={inputValue}
           onChange={(e) => { onInputChange(e.target.value); if (value) onClear(); setOpen(true); }}
           onFocus={() => setOpen(true)}
-          className={`${inputCls} pl-9 pr-8`}
+          className={cx(fieldCls, 'pr-8')}
         />
         {(value || inputValue) && (
-          <button type="button" onClick={() => { onClear(); setOpen(false); }}
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-xs">
-            ✕
+          <button type="button" onClick={() => { onClear(); setOpen(false); }} aria-label="Clear"
+            className="absolute right-1 top-1/2 -translate-y-1/2 w-7 h-7 grid place-items-center text-slate-400 hover:text-slate-100">
+            <X size={14} />
           </button>
         )}
       </div>
       {value && (
-        <p className="text-[11px] text-emerald-400 mt-1 flex items-center gap-1">
-          <UserCheck size={10} /> Linked to existing payee
+        <p className="text-xs text-slate-300 mt-1 flex items-center gap-1.5">
+          <Check size={12} /> Linked to existing payee
         </p>
       )}
       {!value && inputValue.trim() && (
-        <p className="text-[11px] text-amber-400 mt-1">
-          ✦ Will auto-create "{inputValue.trim()}" as a new payee on save
+        <p className="text-xs text-slate-400 mt-1 truncate">
+          New payee “{inputValue.trim()}” will be created on save
         </p>
       )}
       {open && (filtered.length > 0 || showCreate) && (
-        <div className="absolute z-[60] w-full mt-1 bg-[#1a2234] border border-slate-700 rounded-xl shadow-2xl overflow-hidden">
+        <div className={popCls}>
           {filtered.map((p) => (
             <button key={p.id} type="button"
               onMouseDown={() => { onSelect(p.id, p.name); setOpen(false); }}
-              className="w-full flex items-center justify-between px-3 py-2.5 hover:bg-slate-800 transition-colors text-left">
-              <div className="flex items-center gap-2">
-                <div className="w-6 h-6 rounded-full bg-blue-500/20 flex items-center justify-center text-[10px] font-bold text-blue-400">
-                  {p.name.charAt(0).toUpperCase()}
-                </div>
-                <span className="text-sm text-slate-200">{p.name}</span>
-              </div>
-              {p.category && <span className="text-[10px] text-slate-500 capitalize">{p.category}</span>}
+              className={optCls}>
+              <span className="flex items-center gap-2 min-w-0">
+                <span className="avatar-sq" style={{ width: 22, height: 22, fontSize: 10 }}>{p.name.charAt(0).toUpperCase()}</span>
+                <span className="truncate">{p.name}</span>
+              </span>
             </button>
           ))}
           {showCreate && (
             <button type="button"
               onMouseDown={() => { onInputChange(inputValue.trim()); setOpen(false); }}
-              className="w-full flex items-center gap-2 px-3 py-2.5 hover:bg-slate-800 transition-colors border-t border-slate-700/60">
-              <span className="text-xs text-amber-400 font-medium">+ Create "{inputValue.trim()}" as new payee</span>
+              className={cx(optCls, 'justify-start border-t border-line mt-1 pt-2 text-blue-400 font-semibold')}>
+              <Plus size={14} /> Create “{inputValue.trim()}”
             </button>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Receipt photo picker ─────────────────────────────────────────────────── */
+function ReceiptField({ preview, onPick, onRemove }: { preview: string | null; onPick: (f: File) => void; onRemove: () => void }) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <div>
+      <label className={labelCls}>Receipt <span className="text-slate-400">(optional)</span></label>
+      <input
+        ref={input}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) onPick(f); e.target.value = ''; }}
+      />
+      {preview ? (
+        <div className="flex items-center gap-3 anim-fade">
+          <a href={preview} target="_blank" rel="noreferrer" className="block w-16 h-16 shrink-0 bg-slate-900 border border-line-strong overflow-hidden" title="Open full size">
+            <img src={preview} alt="Receipt" className="w-full h-full object-cover" />
+          </a>
+          <div className="flex gap-2">
+            <Button size="sm" variant="secondary" onClick={() => input.current?.click()}>Replace</Button>
+            <Button size="sm" variant="danger" onClick={onRemove}>Remove</Button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => input.current?.click()}
+          className="w-full h-11 flex items-center gap-2.5 px-3 border border-dashed border-slate-500 text-sm text-slate-300 hover:border-slate-100 hover:text-slate-100 transition-colors"
+        >
+          <Camera size={16} /> Take or choose a photo
+        </button>
       )}
     </div>
   );
@@ -212,6 +251,8 @@ export function TransactionFormModal({
   initialType = 'expense',
   editingTransaction = null,
   editingTransfer = null,
+  initialToAccountId = '',
+  initialTitle = '',
 }: TransactionFormModalProps) {
   const { user } = useAuth();
 
@@ -221,18 +262,15 @@ export function TransactionFormModal({
   /* ── Loaded data ── */
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [tags, setTags] = useState<Tag[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [budgets, setBudgets] = useState<Budget[]>([]);
   const [payees, setPayees] = useState<Payee[]>([]);
   const [displayCurrency, setDisplayCurrency] = useState('USD');
 
   /* ── Form state ── */
   const blankForm = useCallback(() => ({
     account_id: '',
-    to_account_id: '',
+    to_account_id: initialToAccountId,
     category_id: '',
-    title: '',
+    title: initialTitle,
     amount: '',
     charge_amount: '',
     type: initialType as 'income' | 'expense' | 'transfer',
@@ -240,16 +278,13 @@ export function TransactionFormModal({
     transaction_date: nowInTZ(defaultTimeZone),
     timezone: defaultTimeZone,
     notes: '',
-  }), [initialType, defaultTimeZone]);
+  }), [initialType, defaultTimeZone, initialToAccountId, initialTitle]);
 
   const [formData, setFormData] = useState(blankForm);
   const [payeeId, setPayeeId] = useState('');
   const [payeeInput, setPayeeInput] = useState('');
   const [payerId, setPayerId] = useState('');
   const [payerInput, setPayerInput] = useState('');
-  const [selectedTags, setSelectedTags] = useState<string[]>([]);
-  const [groupId, setGroupId] = useState('');
-  const [budgetId, setBudgetId] = useState('');
   const [isSplit, setIsSplit] = useState(false);
     const [splits, setSplits] = useState<
       { title: string; category_id: string; account_id: string; amount: string; description: string }[]
@@ -257,121 +292,72 @@ export function TransactionFormModal({
   const [dateTouched, setDateTouched] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [keepOpen, setKeepOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const amountRef = useRef<HTMLInputElement>(null);
+  const toast = useToast();
 
-  /* ── Exchange rate override ── */
-  const [liveRate, setLiveRate] = useState<number | null>(null);
+  /* ── Receipt photo: a new file to upload, or the saved one (path) ── */
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
+  const [receiptPreview, setReceiptPreview] = useState<string | null>(null);
+  const [existingReceipt, setExistingReceipt] = useState<string | null>(null);
+  const [receiptRemoved, setReceiptRemoved] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const path = editingTransaction?.receipt_path ?? null;
+    setReceiptFile(null);
+    setReceiptRemoved(false);
+    setExistingReceipt(path);
+    setReceiptPreview(null);
+    let live = true;
+    if (path) signedUrl(path).then((u) => live && setReceiptPreview(u));
+    return () => { live = false; };
+  }, [isOpen, editingTransaction]);
+
+  // Free the local preview URL when it's replaced.
+  useEffect(() => () => { if (receiptPreview?.startsWith('blob:')) URL.revokeObjectURL(receiptPreview); }, [receiptPreview]);
+
+  const pickReceipt = (f: File) => { setReceiptFile(f); setReceiptRemoved(false); setReceiptPreview(URL.createObjectURL(f)); };
+  const clearReceipt = () => { setReceiptFile(null); setReceiptPreview(null); setReceiptRemoved(true); };
+
+  /* Esc closes; focus the amount when a new form opens */
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    const t = window.setTimeout(() => {
+      if (!editingTransaction && !editingTransfer && window.matchMedia('(min-width: 768px)').matches) amountRef.current?.focus();
+    }, 60);
+    return () => { window.removeEventListener('keydown', onKey); window.clearTimeout(t); };
+  }, [isOpen, onClose, editingTransaction, editingTransfer]);
+
+  /* ── Exchange rate override ──
+   * Suggested rate comes from the user's own manual rates (Currencies page):
+   * rates[code] = "1 unit of `code` = this many units of the default
+   * currency" — exactly the pivot displayCurrency already is here, so no
+   * conversion is needed. `customRate` lets them override it per-transaction. */
   const [customRate, setCustomRate] = useState('');
-  const [rateLoading, setRateLoading] = useState(false);
+  const manualRates = useMemo(() => loadManualRates(user?.id), [user]);
 
   /* ── Load data when modal opens ── */
   const loadData = useCallback(async () => {
     if (!user || !isOpen) return;
 
-    const [accRes, catRes, tagsRes, groupsRes, budgetsRes, payeesRes, profRes] = await Promise.all([
+    const [accRes, catRes, payeesRes, profRes] = await Promise.all([
       supabase.from('accounts').select('*').eq('user_id', user.id).eq('is_active', true),
       supabase.from('categories').select('*').eq('user_id', user.id),
-      supabase.from('tags').select('*').eq('user_id', user.id),
-      supabase.from('transaction_groups').select('*').eq('user_id', user.id),
-      supabase.from('budgets').select('*').eq('user_id', user.id).order('name'),
       supabase.from('payees').select('*').eq('user_id', user.id).order('name'),
       supabase.from('profiles').select('default_currency').eq('id', user.id).single(),
     ]);
 
     if (accRes.data) setAccounts(accRes.data);
     if (catRes.data) setCategories(catRes.data);
-    if (tagsRes.data) setTags(tagsRes.data);
-    if (groupsRes.data) setGroups(groupsRes.data);
-    if (budgetsRes.data) setBudgets(budgetsRes.data);
     if (payeesRes.data) setPayees(payeesRes.data);
     setDisplayCurrency(profRes.data?.default_currency ?? 'USD');
   }, [user, isOpen]);
 
   useEffect(() => { loadData(); }, [loadData]);
-
-  /* ── Fetch live exchange rate when account + displayCurrency are known ── */
-  const fetchLiveRate = useCallback(async (accountId: string) => {
-    const acc = accounts.find((a) => a.id === accountId);
-    const accCurrency = (acc?.currency ?? displayCurrency).toUpperCase();
-    const defaultCurrency = displayCurrency.toUpperCase();
-
-    if (!accCurrency || accCurrency === defaultCurrency) {
-      setLiveRate(null);
-      return;
-    }
-    setRateLoading(true);
-
-    // Helper: extract displayCurrency per 1 accCurrency from a rates map
-    // where the map's base is `mapBase`.
-    const extractRate = (
-      ratesMap: Record<string, number>,
-      mapBase: string,
-    ): number | null => {
-      if (mapBase === defaultCurrency) {
-        // rates[accCurrency] = how many accCurrency per 1 defaultCurrency
-        // → we want: how many defaultCurrency per 1 accCurrency = 1 / rates[accCurrency]
-        const v = ratesMap[accCurrency];
-        return v != null ? parseFloat((1 / v).toFixed(8)) : null;
-      }
-      if (mapBase === accCurrency) {
-        // rates[defaultCurrency] = how many defaultCurrency per 1 accCurrency ← exactly what we need
-        const v = ratesMap[defaultCurrency];
-        return v != null ? v : null;
-      }
-      return null;
-    };
-
-    try {
-      // 1. Try DB cache with base = defaultCurrency
-      const { data: d1 } = await supabase
-        .from('exchange_rates')
-        .select('rates')
-        .eq('base_currency', defaultCurrency)
-        .single();
-
-      if (d1?.rates) {
-        const r = extractRate(d1.rates as Record<string, number>, defaultCurrency);
-        if (r != null) { setLiveRate(r); return; }
-      }
-
-      // 2. Try DB cache with base = accCurrency
-      const { data: d2 } = await supabase
-        .from('exchange_rates')
-        .select('rates')
-        .eq('base_currency', accCurrency)
-        .single();
-
-      if (d2?.rates) {
-        const r = extractRate(d2.rates as Record<string, number>, accCurrency);
-        if (r != null) { setLiveRate(r); return; }
-      }
-
-      // 3. On-demand fetch via Edge Function (auto-fetches + caches for missing base)
-      const { data: efData } = await supabase.functions.invoke<{
-        rates: Record<string, number>;
-        base_currency: string;
-      }>('rates', { body: { base_currency: accCurrency } });
-
-      if (efData?.rates) {
-        const r = extractRate(efData.rates, accCurrency);
-        if (r != null) { setLiveRate(r); return; }
-      }
-
-      setLiveRate(null);
-    } catch {
-      setLiveRate(null);
-    } finally {
-      setRateLoading(false);
-    }
-  }, [accounts, displayCurrency]);
-
-  /* Trigger rate fetch when account or display currency changes */
-  useEffect(() => {
-    if (formData.account_id && accounts.length > 0) {
-      fetchLiveRate(formData.account_id);
-    } else {
-      setLiveRate(null);
-    }
-  }, [formData.account_id, accounts, fetchLiveRate]);
 
   /* ── Populate form when editing ── */
   useEffect(() => {
@@ -394,9 +380,6 @@ export function TransactionFormModal({
         timezone: fromLeg.timezone || defaultTimeZone,
         notes: fromLeg.notes || '',
       });
-      setSelectedTags(fromLeg.tags || []);
-      setGroupId(fromLeg.group_id || '');
-      setBudgetId('');
       setPayeeId(''); setPayeeInput('');
       setPayerId(''); setPayerInput('');
       setIsSplit(false); setSplits([]);
@@ -424,9 +407,6 @@ export function TransactionFormModal({
       if (editingTransaction.payer_id) {
         setPayerId(editingTransaction.payer_id);
       }
-      setSelectedTags(editingTransaction.tags || []);
-      setGroupId(editingTransaction.group_id || '');
-      setBudgetId(editingTransaction.budget_id || '');
       setCustomRate(editingTransaction.custom_rate != null ? String(editingTransaction.custom_rate) : '');
 
     } else {
@@ -435,15 +415,17 @@ export function TransactionFormModal({
       setPayeeInput('');
       setPayerId('');
       setPayerInput('');
-      setSelectedTags([]);
-      setGroupId('');
-      setBudgetId('');
       setIsSplit(false);
       setSplits([]);
       setCustomRate('');
     }
     setDateTouched(false);
     setError(null);
+    const src = editingTransfer?.fromLeg ?? editingTransaction;
+    setMoreOpen(!!src && (
+      Number(src.charge_amount ?? 0) > 0 || src.custom_rate != null ||
+      (!!src.timezone && src.timezone !== defaultTimeZone)
+    ));
   }, [isOpen, editingTransaction, editingTransfer, blankForm, defaultTimeZone]);
 
   // When opening a NEW transaction form, ensure it shows "now" in the selected timezone
@@ -507,6 +489,7 @@ export function TransactionFormModal({
     if (!user) return;
     setSubmitting(true);
     setError(null);
+    let savedIds: string[] = [];
 
     const resolvedPayeeId = formData.type === 'expense' ? await resolvePayee() : null;
     const resolvedPayerId = formData.type === 'income' ? await resolvePayer() : null;
@@ -547,8 +530,6 @@ export function TransactionFormModal({
             currency: getCurrencyForAccount(formData.account_id),
             custom_rate: parsedCustomRate,
             charge_amount: parsedChargeAmount,
-            tags: selectedTags,
-            group_id: groupId || null,
             notes: formData.notes || null,
           }).eq('id', editingTransfer.fromLeg.id),
           supabase.from('transactions').update({
@@ -561,8 +542,6 @@ export function TransactionFormModal({
             currency: getCurrencyForAccount(formData.to_account_id),
             custom_rate: parsedCustomRate,
             charge_amount: parsedChargeAmount,
-            tags: selectedTags,
-            group_id: groupId || null,
             notes: formData.notes || null,
           }).eq('id', editingTransfer.toLeg.id),
         ]);
@@ -571,10 +550,11 @@ export function TransactionFormModal({
           setSubmitting(false);
           return;
         }
+        savedIds = [editingTransfer.fromLeg.id, editingTransfer.toLeg.id];
       } else {
         // INSERT new transfer pair
         const transferPairId = crypto.randomUUID();
-        const { error: err } = await supabase.from('transactions').insert([
+        const { data: ins, error: err } = await supabase.from('transactions').insert([
           {
             user_id: user.id,
             account_id: formData.account_id,
@@ -589,8 +569,6 @@ export function TransactionFormModal({
             custom_rate: parsedCustomRate,
             charge_amount: parsedChargeAmount,
             transfer_pair_id: transferPairId,
-            tags: selectedTags,
-            group_id: groupId || null,
             notes: formData.notes || null,
           },
           {
@@ -607,16 +585,24 @@ export function TransactionFormModal({
             custom_rate: parsedCustomRate,
             charge_amount: parsedChargeAmount,
             transfer_pair_id: transferPairId,
-            tags: selectedTags,
-            group_id: groupId || null,
             notes: formData.notes || null,
           },
-        ]);
+        ]).select('id');
         if (err) { setError(err.message); setSubmitting(false); return; }
+        savedIds = (ins ?? []).map((r) => r.id);
+
+        // Investments: money moved in/out changes what they're worth too, so
+        // the gain (worth − put in) isn't distorted until the next revaluation.
+        const bump = async (acc: Account | undefined, delta: number) => {
+          if (acc?.type !== 'investment' || acc.current_value == null) return;
+          await supabase.from('accounts').update({ current_value: Math.max(0, Number(acc.current_value) + delta) }).eq('id', acc.id);
+        };
+        await Promise.all([bump(toAccount, amount), bump(fromAccount, -amount)]);
       }
 
     } else if (isSplit && splits.length > 0) {
       const mainTitle = formData.title || 'Split';
+      const splitGroupId = crypto.randomUUID();
       const payload = splits
         .filter((s) => s.amount)
         .map((s) => {
@@ -639,25 +625,28 @@ export function TransactionFormModal({
             custom_rate: parsedCustomRate,
             charge_amount: parsedChargeAmount,
             notes: formData.notes || null,
-            tags: selectedTags,
-            group_id: groupId || null,
+            split_group_id: splitGroupId,
           };
         });
       if (payload.length > 0) {
-        const { error: err } = await supabase.from('transactions').insert(payload);
+        const { data: ins, error: err } = await supabase.from('transactions').insert(payload).select('id');
         if (err) { setError(err.message); setSubmitting(false); return; }
+        savedIds = (ins ?? []).map((r) => r.id);
       }
     } else {
       const transactionData = {
         user_id: user.id,
         account_id: formData.account_id,
         category_id: formData.category_id || null,
-        budget_id: formData.type === 'expense' ? (budgetId || null) : null,
         payee_id: resolvedPayeeId,
         payer_id: resolvedPayerId,
         amount: parseFloat(formData.amount),
         type: formData.type,
-        title: formData.title,
+        // Title is optional in the redesigned form: fall back to payee → category → type
+        title: formData.title.trim()
+          || (formData.type === 'expense' ? payeeInput.trim() : payerInput.trim())
+          || categories.find((c) => c.id === formData.category_id)?.name
+          || (formData.type === 'income' ? 'Income' : 'Expense'),
         description: formData.description,
         transaction_date: utcTransactionDate,
         timezone: formData.timezone,
@@ -665,209 +654,339 @@ export function TransactionFormModal({
         custom_rate: parsedCustomRate,
         charge_amount: parsedChargeAmount,
         notes: formData.notes,
-        tags: selectedTags,
-        group_id: groupId || null,
       };
 
-      const { error: err } = editingTransaction
-        ? await supabase.from('transactions').update(transactionData).eq('id', editingTransaction.id)
-        : await supabase.from('transactions').insert(transactionData);
-
-      if (err) { setError(err.message); setSubmitting(false); return; }
+      if (editingTransaction) {
+        const { error: err } = await supabase.from('transactions').update(transactionData).eq('id', editingTransaction.id);
+        if (err) { setError(err.message); setSubmitting(false); return; }
+        savedIds = [editingTransaction.id];
+      } else {
+        const { data: ins, error: err } = await supabase.from('transactions').insert(transactionData).select('id').single();
+        if (err) { setError(err.message); setSubmitting(false); return; }
+        savedIds = ins ? [ins.id] : [];
+      }
     }
 
+    /* Receipt: upload after the row exists (the path is keyed by its id).
+     * A failed upload doesn't undo the save — it just says so. */
+    let receiptNote = '';
+    if (formData.type !== 'transfer' && savedIds.length) {
+      if (receiptFile) {
+        const blob = await compressImage(receiptFile, 1600, 0.8);
+        const path = mediaPath(user.id, 'receipts', savedIds[0]);
+        const { error: upErr } = await uploadImage(path, blob);
+        if (upErr) receiptNote = ` — receipt not attached: ${upErr}`;
+        else {
+          await supabase.from('transactions').update({ receipt_path: path }).in('id', savedIds);
+          if (existingReceipt) removeImages([existingReceipt]);
+        }
+      } else if (receiptRemoved && existingReceipt) {
+        await supabase.from('transactions').update({ receipt_path: null }).in('id', savedIds);
+        removeImages([existingReceipt]);
+      }
+    }
+    markFresh(savedIds);
+
     setSubmitting(false);
+    const cur = getCurrencyForAccount(formData.account_id);
+    const catName = formData.type === 'transfer' ? '' : categories.find((c) => c.id === formData.category_id)?.name;
+    const kindWord = formData.type === 'transfer' ? ' transfer' : '';
+    const savedMsg = editingTransaction || editingTransfer
+      ? 'Changes saved'
+      : `Saved · ${formatMoney(parseFloat(formData.amount) || 0, cur)}${catName ? ` · ${catName}` : kindWord}`;
+    setReceiptFile(null); setReceiptPreview(null); setReceiptRemoved(false); setExistingReceipt(null);
+
+    if (keepOpen && !editingTransaction && !editingTransfer) {
+      // "Add another after saving": stay open, keep type/account/category/date,
+      // clear the per-entry fields. Hosts (e.g. the app shell) close the modal
+      // inside onSaved, so broadcast the change directly instead.
+      window.dispatchEvent(new Event('ft-data-changed'));
+      toast.show(`${savedMsg} — add the next one${receiptNote}`);
+      setFormData((f) => ({
+        ...f,
+        amount: '',
+        charge_amount: '',
+        title: '',
+        description: '',
+        notes: '',
+        transaction_date: dateTouched ? f.transaction_date : nowInTZ(f.timezone || defaultTimeZone),
+      }));
+      setPayeeId(''); setPayeeInput('');
+      setPayerId(''); setPayerInput('');
+      setIsSplit(false); setSplits([]);
+      amountRef.current?.focus();
+      return;
+    }
+
+    toast.show(savedMsg + receiptNote);
     onSaved();
     onClose();
   };
 
   const splitTotal = splits.reduce((s, sp) => s + (sp.amount ? parseFloat(sp.amount) : 0), 0);
 
-  const inputCls = 'w-full px-3 py-2 bg-slate-800 border border-slate-700 text-slate-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm placeholder-slate-500';
-  const labelCls = 'block text-xs font-medium text-slate-400 mb-1';
-
   if (!isOpen) return null;
 
-  return (
-    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-[#141927] border border-slate-700 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+  const isEditing = !!(editingTransaction || editingTransfer);
+  const heading = editingTransfer ? 'Edit transfer' : editingTransaction ? 'Edit transaction' : 'New transaction';
+  const acc = accounts.find((a) => a.id === formData.account_id);
+  const accCurrency = acc?.currency || displayCurrency;
+  const foreign = !!acc?.currency && acc.currency !== displayCurrency;
+  const suggestedRate = foreign ? manualRates[accCurrency] ?? null : null;
+  const effectiveRate = customRate.trim() !== '' ? parseFloat(customRate) : suggestedRate;
+  const amountNum = parseFloat(formData.amount);
+  const convHint = foreign && effectiveRate && amountNum > 0
+    ? `≈ ${formatMoney(amountNum * effectiveRate, displayCurrency)}`
+    : foreign ? `${accCurrency} → ${displayCurrency}` : '';
+  const toAcc = accounts.find((a) => a.id === formData.to_account_id);
+  const splitMismatch = isSplit && !!formData.amount && Math.abs(splitTotal - Number(formData.amount)) > 0.001;
+  const accountItems = accounts.map((a) => ({ id: a.id, label: a.name, meta: a.currency || a.type.replace('_', ' ') }));
 
+  const setType = (t: 'expense' | 'income' | 'transfer') => {
+    setFormData((f) => ({ ...f, type: t }));
+    setPayeeId(''); setPayeeInput('');
+    setPayerId(''); setPayerInput('');
+  };
+
+  const dateField = (
+    <div>
+      <label className={labelCls}>Date &amp; time</label>
+      <input required type="datetime-local" value={formData.transaction_date}
+        onChange={(e) => {
+          setDateTouched(true);
+          setFormData((f) => ({ ...f, transaction_date: e.target.value }));
+        }}
+        className={fieldCls} />
+    </div>
+  );
+
+  // Portalled to <body> (see Modal) and centred on the viewport on web.
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[70] flex items-stretch md:items-center justify-center md:p-6 bg-slate-200/45 dark:bg-black/60 anim-fade"
+      onMouseDown={(e) => { if (e.target === e.currentTarget && !submitting) onClose(); }}
+    >
+      <form
+        id="txn-form"
+        onSubmit={handleSubmit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); (e.currentTarget as HTMLFormElement).requestSubmit(); }
+        }}
+        className="w-full md:w-[560px] h-full md:h-auto md:max-h-full bg-app md:shadow-ds-lg flex flex-col pt-safe md:pt-0 anim-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label={heading}
+      >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 shrink-0">
-          <h3 className="text-base font-semibold text-slate-100">
-            {editingTransfer ? 'Edit Transfer' : editingTransaction ? 'Edit Transaction' : 'New Transaction'}
-          </h3>
-          <button type="button" onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-100 hover:bg-slate-700/80 rounded-lg transition-colors">
-            <X size={16} />
-          </button>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2.5 px-5 py-3.5 md:py-4 rule-b shrink-0">
+          <h3 className="text-lg font-extrabold text-slate-100 flex-1 min-w-0 truncate">{heading}</h3>
+          <IconButton bordered={false} onClick={onClose} aria-label="Close" className="w-8 h-8 -mr-1.5 md:order-last">
+            <X size={18} />
+          </IconButton>
+          <SegmentedControl
+            className="w-full md:w-auto"
+            stretch={false}
+            value={formData.type}
+            onChange={setType}
+            options={[
+              { value: 'expense', label: 'Expense' },
+              { value: 'income', label: 'Income' },
+              { value: 'transfer', label: 'Transfer' },
+            ]}
+          />
         </div>
 
-        {/* Scrollable body */}
-        <div className="overflow-y-auto flex-1 px-6 py-5">
-          {error && (
-            <div className="bg-red-500/10 border border-red-500/30 text-red-400 p-3 rounded-lg text-xs mb-4">{error}</div>
+        {/* Body */}
+        <div className="overflow-y-auto flex-1 min-h-0 p-5 flex flex-col gap-4">
+          {/* Amount */}
+          <div className={cx('flex items-baseline gap-2 pb-1.5 border-b-2', error && !formData.amount ? 'border-red-500' : 'border-slate-100')}>
+            <span className="text-[32px] font-extrabold text-slate-400 leading-none">{currencySymbol(accCurrency).trim()}</span>
+            <input
+              ref={amountRef}
+              required
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min="0.01"
+              value={formData.amount}
+              onChange={(e) => setFormData((f) => ({ ...f, amount: e.target.value }))}
+              placeholder="0"
+              aria-label="Amount"
+              className="flex-1 min-w-0 bg-transparent border-0 outline-none text-[40px] font-extrabold tracking-[-0.02em] leading-tight text-slate-100 placeholder-slate-600 tabular-nums no-mask"
+            />
+            {convHint && <span className="text-[13px] text-slate-400 tabular-nums whitespace-nowrap">{convHint}</span>}
+          </div>
+
+          {formData.type !== 'transfer' && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className={labelCls}>{formData.type === 'expense' ? 'Payee' : 'From (payer)'}</label>
+                {formData.type === 'expense' ? (
+                  <PayeeCombobox
+                    payees={payees}
+                    value={payeeId}
+                    inputValue={payeeInput}
+                    onInputChange={(txt) => { setPayeeInput(txt); setPayeeId(''); }}
+                    onSelect={(id, name) => { setPayeeId(id); setPayeeInput(name); }}
+                    onClear={() => { setPayeeId(''); setPayeeInput(''); }}
+                  />
+                ) : (
+                  <PayeeCombobox
+                    payees={payees}
+                    value={payerId}
+                    inputValue={payerInput}
+                    placeholder="Who paid you?"
+                    onInputChange={(txt) => { setPayerInput(txt); setPayerId(''); }}
+                    onSelect={(id, name) => { setPayerId(id); setPayerInput(name); }}
+                    onClear={() => { setPayerId(''); setPayerInput(''); }}
+                  />
+                )}
+              </div>
+              <div>
+                <label className={labelCls}>Category</label>
+                <SelectCombobox
+                  items={categories
+                    .filter((c) => (formData.type === 'expense' ? c.type === 'expense' : c.type === 'income'))
+                    .map((c) => ({ id: c.id, label: c.name }))}
+                  value={formData.category_id}
+                  onSelect={(id) => setFormData((f) => ({ ...f, category_id: id }))}
+                  placeholder="Search category…"
+                />
+              </div>
+            </div>
           )}
 
-          <form id="txn-form" onSubmit={handleSubmit} className="space-y-5">
-
-            {/* Type selector */}
-            <div className="flex items-center gap-2">
-              {(['expense', 'income', 'transfer'] as const).map((t) => (
-                <button key={t} type="button"
-                  onClick={() => {
-                    setFormData((f) => ({ ...f, type: t }));
-                    setPayeeId(''); setPayeeInput('');
-                    setPayerId(''); setPayerInput('');
-                  }}
-                  className={`px-4 py-1.5 rounded-lg text-sm font-medium capitalize border transition-all ${
-                    formData.type === t
-                      ? t === 'income' ? 'bg-emerald-600/20 border-emerald-500/50 text-emerald-300'
-                        : t === 'transfer' ? 'bg-cyan-600/20 border-cyan-500/50 text-cyan-300'
-                        : 'bg-red-600/20 border-red-500/50 text-red-300'
-                      : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
-                  }`}>
-                  {t}
-                </button>
-              ))}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className={labelCls}>
+                {formData.type === 'transfer' ? 'From account' : formData.type === 'income' ? 'Received in' : 'Paid from'}
+              </label>
+              <SelectCombobox
+                required
+                items={accountItems}
+                value={formData.account_id}
+                onSelect={(id) => setFormData((f) => ({ ...f, account_id: id }))}
+                placeholder="Select account…"
+              />
             </div>
+            {formData.type === 'transfer' ? (
+              <div>
+                <label className={labelCls}>To account</label>
+                <SelectCombobox
+                  required
+                  items={accountItems.filter((a) => a.id !== formData.account_id)}
+                  value={formData.to_account_id}
+                  onSelect={(id) => setFormData((f) => ({ ...f, to_account_id: id }))}
+                  placeholder="Select account…"
+                />
+              </div>
+            ) : dateField}
+          </div>
 
-            {/* Source → Destination */}
-            <div className="bg-slate-800/50 rounded-xl p-4 border border-slate-700/60">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-3">
-                {formData.type === 'transfer' ? 'Transfer Route' : 'Payment Route'}
-              </p>
-              <div className="flex items-start gap-3">
-                <div className="flex-1">
-                  <label className={labelCls}>
-                    {formData.type === 'income' ? 'Into Account' : 'From Account (Source)'}
-                  </label>
-                  <SelectCombobox
-                    required
-                    items={accounts.map((a) => ({
-                      id: a.id,
-                      label: a.name,
-                      meta: a.type.replace('_', ' '),
-                    }))}
-                    value={formData.account_id}
-                    onSelect={(id) => setFormData((f) => ({ ...f, account_id: id }))}
-                    placeholder="Select account…"
-                  />
-                </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {formData.type === 'transfer' && dateField}
+            <div className={formData.type === 'transfer' ? '' : 'sm:col-span-2'}>
+              <label className={labelCls}>
+                Title <span className="text-slate-400">{formData.type === 'transfer' ? '(defaults to “Transfer”)' : '(optional — defaults to payee)'}</span>
+              </label>
+              <input type="text" value={formData.title}
+                onChange={(e) => setFormData((f) => ({ ...f, title: e.target.value }))}
+                placeholder={formData.type === 'transfer' ? 'Transfer' : 'e.g. Grocery run'} className={fieldCls} />
+            </div>
+          </div>
 
-                <div className="flex flex-col items-center gap-0.5 shrink-0 pt-6">
-                  <ArrowRight size={18} className="text-slate-600" />
-                </div>
+          {formData.type === 'transfer' && toAcc && acc && toAcc.currency !== acc.currency && (
+            <p className="text-xs text-slate-400 -mt-1.5">Crossing currencies ({acc.currency} → {toAcc.currency}). Set a custom rate under More options if needed.</p>
+          )}
 
-                <div className="flex-1">
-                  {formData.type === 'transfer' ? (
-                    <>
-                      <label className={labelCls}>To Account (Destination)</label>
-                      <SelectCombobox
-                        required
-                        items={accounts
-                          .filter((a) => a.id !== formData.account_id)
-                          .map((a) => ({
-                            id: a.id,
-                            label: a.name,
-                            meta: a.type.replace('_', ' '),
-                          }))}
-                        value={formData.to_account_id}
-                        onSelect={(id) => setFormData((f) => ({ ...f, to_account_id: id }))}
-                        placeholder="Select account…"
-                      />
-                    </>
-                  ) : formData.type === 'expense' ? (
-                    <>
-                      <label className={labelCls}>Payee / Destination <span className="text-slate-600 font-normal">(optional)</span></label>
-                      <PayeeCombobox
-                        payees={payees}
-                        value={payeeId}
-                        inputValue={payeeInput}
-                        onInputChange={(txt) => { setPayeeInput(txt); setPayeeId(''); }}
-                        onSelect={(id, name) => { setPayeeId(id); setPayeeInput(name); }}
-                        onClear={() => { setPayeeId(''); setPayeeInput(''); }}
-                      />
-                    </>
-                  ) : (
-                    <>
-                      <label className={labelCls}>Payer / Source <span className="text-slate-600 font-normal">(optional)</span></label>
-                      <PayeeCombobox
-                        payees={payees}
-                        value={payerId}
-                        inputValue={payerInput}
-                        onInputChange={(txt) => { setPayerInput(txt); setPayerId(''); }}
-                        onSelect={(id, name) => { setPayerId(id); setPayerInput(name); }}
-                        onClear={() => { setPayerId(''); setPayerInput(''); }}
-                      />
-                    </>
+          <div>
+            <label className={labelCls}>Note</label>
+            <textarea value={formData.notes}
+              onChange={(e) => setFormData((f) => ({ ...f, notes: e.target.value }))}
+              placeholder="Optional"
+              className={cx(fieldCls, 'resize-y')} rows={2} />
+          </div>
+
+          {formData.type !== 'transfer' && (
+            <ReceiptField preview={receiptPreview} onPick={pickReceipt} onRemove={clearReceipt} />
+          )}
+
+          {/* ── More options (quiet) ── */}
+          <div className="rule-t pt-1">
+            <button type="button" onClick={() => setMoreOpen((o) => !o)} aria-expanded={moreOpen}
+              className="w-full flex items-center gap-2 h-10 text-left t-th hover:text-slate-100 transition-colors">
+              <span className="flex-1">More options</span>
+              <span className="normal-case tracking-normal font-normal text-xs text-slate-400 truncate">
+                {moreOpen ? '' : ['Charge', foreign && 'Rate', 'Timezone', formData.type !== 'transfer' && 'Split'].filter(Boolean).join(' · ')}
+              </span>
+              <ChevronDown size={16} className={cx('transition-transform', moreOpen && 'rotate-180')} />
+            </button>
+
+            {moreOpen && (
+              <div className="flex flex-col gap-4 pt-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className={labelCls}>Charge <span className="text-slate-400">(deducted from balance)</span></label>
+                    <input type="number" inputMode="decimal" step="0.01" min="0" value={formData.charge_amount}
+                      onChange={(e) => setFormData((f) => ({ ...f, charge_amount: e.target.value }))}
+                      placeholder="0.00"
+                      className={cx(fieldCls, 'tabular-nums no-mask')} />
+                  </div>
+                  <div>
+                    <label className={labelCls}>Timezone</label>
+                    <select value={formData.timezone}
+                      onChange={(e) => {
+                        const tz = e.target.value;
+                        setFormData((f) => ({
+                          ...f,
+                          timezone: tz,
+                          transaction_date: dateTouched || editingTransaction
+                            ? f.transaction_date
+                            : nowInTZ(tz),
+                        }));
+                      }}
+                      className={fieldCls}>
+                      {!['UTC', 'Europe/London', 'Europe/Berlin', 'Asia/Dhaka', 'Asia/Kolkata', 'Asia/Singapore', 'America/New_York', 'America/Los_Angeles'].includes(formData.timezone) && formData.timezone && (
+                        <option value={formData.timezone}>{formData.timezone}</option>
+                      )}
+                      <option value="UTC">UTC</option>
+                      <option value="Europe/London">Europe/London</option>
+                      <option value="Europe/Berlin">Europe/Berlin</option>
+                      <option value="Asia/Dhaka">Asia/Dhaka</option>
+                      <option value="Asia/Kolkata">Asia/Kolkata</option>
+                      <option value="Asia/Singapore">Asia/Singapore</option>
+                      <option value="America/New_York">America/New_York</option>
+                      <option value="America/Los_Angeles">America/Los_Angeles</option>
+                    </select>
+                  </div>
+
+                  {formData.type === 'expense' && (
+                    <div>
+                      <label className={labelCls}>Description</label>
+                      <input type="text" value={formData.description}
+                        onChange={(e) => setFormData((f) => ({ ...f, description: e.target.value }))}
+                        className={fieldCls} placeholder="Optional description" />
+                    </div>
                   )}
                 </div>
-              </div>
-            </div>
 
-            {/* Core fields */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className={labelCls}>Title</label>
-                <input required type="text" value={formData.title}
-                  onChange={(e) => setFormData((f) => ({ ...f, title: e.target.value }))}
-                  placeholder="e.g. Grocery run" className={inputCls} />
-              </div>
-              <div>
-                <label className={labelCls}>Amount</label>
-                <input required type="number" step="0.01" min="0.01" value={formData.amount}
-                  onChange={(e) => setFormData((f) => ({ ...f, amount: e.target.value }))}
-                  className={inputCls} />
-              </div>
-              <div>
-                <label className={labelCls}>
-                  Charge (optional)
-                  <span className="ml-1 text-slate-500 font-normal normal-case">deducted from balance</span>
-                </label>
-                <input type="number" step="0.01" min="0" value={formData.charge_amount}
-                  onChange={(e) => setFormData((f) => ({ ...f, charge_amount: e.target.value }))}
-                  placeholder="0.00"
-                  className={inputCls} />
-              </div>
-
-              {/* Exchange rate override — only shown when account currency ≠ default currency */}
-              {(() => {
-                const acc = accounts.find((a) => a.id === formData.account_id);
-                const accCurrency = acc?.currency;
-                if (!accCurrency || accCurrency === displayCurrency) return null;
-                const effectiveRate = customRate.trim() !== '' ? parseFloat(customRate) : liveRate;
-                const convertedAmt = formData.amount && effectiveRate
-                  ? (parseFloat(formData.amount) * effectiveRate).toFixed(2)
-                  : null;
-                const convertedCharge = formData.charge_amount && effectiveRate
-                  ? (parseFloat(formData.charge_amount) * effectiveRate).toFixed(2)
-                  : null;
-                return (
-                  <div className="md:col-span-2">
-                    <div className="bg-slate-800/60 border border-slate-700 rounded-xl p-4 space-y-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-semibold text-slate-300 tracking-wide uppercase">
-                          Exchange Rate
-                          <span className="ml-2 font-normal normal-case text-slate-500">
-                            ({accCurrency} → {displayCurrency})
-                          </span>
-                        </span>
-                        {customRate.trim() !== '' && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 font-medium">
-                            Manual override
-                          </span>
-                        )}
+                {/* Exchange rate override — only when account currency ≠ default currency */}
+                {foreign && (() => {
+                  const convertedAmt = formData.amount && effectiveRate
+                    ? formatMoney(parseFloat(formData.amount) * effectiveRate, displayCurrency)
+                    : null;
+                  const convertedCharge = formData.charge_amount && effectiveRate
+                    ? formatMoney(parseFloat(formData.charge_amount) * effectiveRate, displayCurrency)
+                    : null;
+                  return (
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="t-th flex-1">Exchange rate · {accCurrency} → {displayCurrency}</span>
+                        {customRate.trim() !== '' && <Badge tone="outline">Manual override</Badge>}
                       </div>
-
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-end gap-2">
                         <div className="flex-1">
-                          <label className={labelCls}>
-                            Rate{' '}
-                            <span className="text-slate-500 font-normal">
-                              1 {accCurrency} =
-                            </span>
-                          </label>
+                          <label className={labelCls}>1 {accCurrency} =</label>
                           <div className="relative">
                             <input
                               type="number"
@@ -875,307 +994,165 @@ export function TransactionFormModal({
                               min="0"
                               value={customRate}
                               onChange={(e) => setCustomRate(e.target.value)}
-                              placeholder={liveRate != null ? liveRate.toFixed(6) : 'Loading…'}
-                              className={`${inputCls} pr-20`}
+                              placeholder={suggestedRate != null ? suggestedRate.toFixed(6) : 'Enter rate'}
+                              className={cx(fieldCls, 'pr-14 tabular-nums no-mask')}
                             />
-                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs pointer-events-none">
+                            <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs pointer-events-none">
                               {displayCurrency}
                             </span>
                           </div>
                         </div>
-
-                        <button
-                          type="button"
-                          title="Reset to live rate"
-                          disabled={rateLoading}
-                          onClick={() => {
-                            setCustomRate('');
-                            fetchLiveRate(formData.account_id);
-                          }}
-                          className="mt-5 p-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-400 hover:text-slate-200 transition-colors disabled:opacity-50"
-                        >
-                          <RefreshCw size={14} className={rateLoading ? 'animate-spin' : ''} />
-                        </button>
-                      </div>
-
-                      {/* Converted preview */}
-                      {convertedAmt && (
-                        <p className="text-xs text-slate-400">
-                          ≈{' '}
-                          <span className="text-slate-200 font-semibold">
-                            {displayCurrency} {convertedAmt}
-                          </span>
-                          {customRate.trim() !== '' ? (
-                            <span className="ml-1.5 text-amber-400">(custom rate)</span>
-                          ) : liveRate != null ? (
-                            <span className="ml-1.5 text-emerald-400">(live rate)</span>
-                          ) : null}
-                        </p>
-                      )}
-                      {convertedCharge && (
-                        <p className="text-[11px] text-slate-500">
-                          Charge ≈{' '}
-                          <span className="text-slate-300 font-medium">
-                            {displayCurrency} {convertedCharge}
-                          </span>
-                        </p>
-                      )}
-
-                      {!liveRate && !rateLoading && customRate.trim() === '' && (
-                        <p className="text-xs text-amber-400">
-                          No live rate found for {accCurrency}/{displayCurrency}. Enter a manual rate above.
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {formData.type !== 'transfer' && (
-                <div>
-                  <label className={labelCls}>Category</label>
-                  <SelectCombobox
-                    items={categories
-                      .filter((c) => (formData.type === 'expense' ? c.type === 'expense' : c.type === 'income'))
-                      .map((c) => ({ id: c.id, label: c.name }))}
-                    value={formData.category_id}
-                    onSelect={(id) => setFormData((f) => ({ ...f, category_id: id }))}
-                    placeholder="Search category…"
-                  />
-                </div>
-              )}
-
-              {formData.type === 'expense' && (
-                <div>
-                  <label className={labelCls}>Budget <span className="text-slate-600 font-normal">(optional)</span></label>
-                  <SelectCombobox
-                    items={budgets.map((b) => ({ id: b.id, label: b.name, meta: b.period }))}
-                    value={budgetId}
-                    onSelect={(id) => setBudgetId(id)}
-                    placeholder="Search budget…"
-                  />
-                </div>
-              )}
-
-              <div>
-                <label className={labelCls}>Date &amp; Time</label>
-                <input required type="datetime-local" value={formData.transaction_date}
-                  onChange={(e) => {
-                    setDateTouched(true);
-                    setFormData((f) => ({ ...f, transaction_date: e.target.value }));
-                  }}
-                  className={inputCls} />
-              </div>
-
-              <div>
-                <label className={labelCls}>Timezone</label>
-                <select value={formData.timezone}
-                  onChange={(e) => {
-                    const tz = e.target.value;
-                    setFormData((f) => ({
-                      ...f,
-                      timezone: tz,
-                      transaction_date: dateTouched || editingTransaction
-                        ? f.transaction_date
-                        : nowForTimeZone(tz),
-                    }));
-                  }}
-                  className={inputCls}>
-                  <option value="UTC">UTC</option>
-                  <option value="Europe/London">Europe/London</option>
-                  <option value="Europe/Berlin">Europe/Berlin</option>
-                  <option value="Asia/Dhaka">Asia/Dhaka</option>
-                  <option value="Asia/Kolkata">Asia/Kolkata</option>
-                  <option value="Asia/Singapore">Asia/Singapore</option>
-                  <option value="America/New_York">America/New_York</option>
-                  <option value="America/Los_Angeles">America/Los_Angeles</option>
-                </select>
-              </div>
-
-              {formData.type !== 'transfer' && formData.type !== 'income' && (
-                <div>
-                  <label className={labelCls}>Description</label>
-                  <input type="text" value={formData.description}
-                    onChange={(e) => setFormData((f) => ({ ...f, description: e.target.value }))}
-                    className={inputCls} placeholder="Optional description" />
-                </div>
-              )}
-
-              <div>
-                <label className={labelCls}>Group <span className="text-slate-600 font-normal">(optional)</span></label>
-                <SelectCombobox
-                  items={groups.map((g) => ({ id: g.id, label: g.name }))}
-                  value={groupId}
-                  onSelect={(id) => setGroupId(id)}
-                  placeholder="Search group…"
-                />
-              </div>
-
-              {/* Tags */}
-              <div className="md:col-span-2">
-                <label className={labelCls}>Tags</label>
-                <div className="flex flex-wrap gap-2 mt-1">
-                  {tags.map((tag) => (
-                    <button key={tag.id} type="button"
-                      onClick={() => setSelectedTags((prev) =>
-                        prev.includes(tag.id) ? prev.filter((id) => id !== tag.id) : [...prev, tag.id]
-                      )}
-                      className={`px-2 py-1 rounded-full text-xs border transition-colors ${
-                        selectedTags.includes(tag.id)
-                          ? 'bg-blue-600 text-white border-blue-600'
-                          : 'bg-slate-800 text-slate-300 border-slate-700 hover:border-slate-500'
-                      }`}>
-                      {tag.name}
-                    </button>
-                  ))}
-                  {tags.length === 0 && <span className="text-xs text-slate-600">No tags yet.</span>}
-                </div>
-              </div>
-
-              {/* Split toggle */}
-              {formData.type !== 'transfer' && (
-                <div className="md:col-span-2 flex items-center gap-2">
-                  <input id="split-toggle-modal" type="checkbox" checked={isSplit}
-                    onChange={(e) => {
-                      setIsSplit(e.target.checked);
-                      if (e.target.checked && splits.length === 0) {
-                        setSplits([
-                          { title: '', category_id: formData.category_id, account_id: formData.account_id, amount: '', description: '' },
-                          { title: '', category_id: formData.category_id, account_id: formData.account_id, amount: '', description: '' },
-                        ]);
-                      }
-                    }}
-                    className="rounded border-slate-600 text-blue-600 focus:ring-blue-500" />
-                  <label htmlFor="split-toggle-modal" className="text-sm text-slate-300">Split this transaction</label>
-                </div>
-              )}
-            </div>
-
-            {/* Split rows */}
-            {isSplit && formData.type !== 'transfer' && (
-              <div className="space-y-3 border-t border-slate-800/60 pt-4">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-sm font-medium text-slate-100">Splits</h4>
-                  <button type="button"
-                    onClick={() => setSplits((p) => [...p, { title: '', category_id: '', amount: '', description: '' }])}
-                    className="text-xs text-blue-400 hover:text-blue-300">+ Add split</button>
-                </div>
-                {splits.map((split, i) => (
-                  <div key={i} className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
-                    <div>
-                      <label className="block text-xs font-medium text-slate-400 mb-1">Amount</label>
-                      <input
-                        type="number"
-                        step="0.01"
-                        required
-                        value={split.amount}
-                        onChange={(e) =>
-                          setSplits((p) =>
-                            p.map((s, idx) => (idx === i ? { ...s, amount: e.target.value } : s))
-                          )
-                        }
-                        className={inputCls}
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-400 mb-1">Destination Account</label>
-                      <SelectCombobox
-                        items={accounts.map((a) => ({
-                          id: a.id,
-                          label: a.name,
-                          meta: a.type.replace('_', ' '),
-                        }))}
-                        value={split.account_id || formData.account_id}
-                        onSelect={(id) =>
-                          setSplits((p) =>
-                            p.map((s, idx) => (idx === i ? { ...s, account_id: id } : s))
-                          )
-                        }
-                        placeholder="Select account…"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-400 mb-1">Category</label>
-                      <select
-                        value={split.category_id}
-                        onChange={(e) =>
-                          setSplits((p) =>
-                            p.map((s, idx) => (idx === i ? { ...s, category_id: e.target.value } : s))
-                          )
-                        }
-                        className={inputCls}
-                      >
-                        <option value="">No category</option>
-                        {categories
-                          .filter((c) => c.type === formData.type || c.type === 'expense')
-                          .map((c) => (
-                            <option key={c.id} value={c.id}>
-                              {c.name}
-                            </option>
-                          ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-slate-400 mb-1">Title</label>
-                      <div className="relative">
-                        <input
-                          type="text"
-                          placeholder="Title"
-                          value={split.title}
-                          onChange={(e) =>
-                            setSplits((p) =>
-                              p.map((s, idx) => (idx === i ? { ...s, title: e.target.value } : s))
-                            )
-                          }
-                          className={`${inputCls} pr-10`}
-                        />
-                        {splits.length > 1 && (
-                          <button
-                            type="button"
-                            onClick={() => setSplits((p) => p.filter((_, idx) => idx !== i))}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 rounded-md text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-colors"
-                            aria-label="Remove split"
-                            title="Remove split"
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                        {customRate.trim() !== '' && (
+                          <IconButton title="Use your manual rate" aria-label="Use your manual rate" onClick={() => setCustomRate('')}>
+                            <X size={14} />
+                          </IconButton>
                         )}
                       </div>
+                      {convertedAmt && (
+                        <p className="text-xs text-slate-400">
+                          ≈ <span className="text-slate-100 font-semibold tabular-nums">{convertedAmt}</span>
+                          {customRate.trim() !== '' ? ' (custom rate)' : suggestedRate != null ? ' (your manual rate)' : ''}
+                          {convertedCharge && <> · charge ≈ <span className="tabular-nums">{convertedCharge}</span></>}
+                        </p>
+                      )}
+                      {suggestedRate == null && customRate.trim() === '' && (
+                        <p className="text-xs text-red-400">
+                          No manual rate set for {accCurrency}/{displayCurrency}. Set one in Currencies, or enter a rate above.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                {/* Split */}
+                {formData.type !== 'transfer' && (
+                  <label className="flex items-center gap-2 text-sm text-slate-100 cursor-pointer w-fit">
+                    <input type="checkbox" checked={isSplit}
+                      onChange={(e) => {
+                        setIsSplit(e.target.checked);
+                        if (e.target.checked && splits.length === 0) {
+                          setSplits([
+                            { title: '', category_id: formData.category_id, account_id: formData.account_id, amount: '', description: '' },
+                            { title: '', category_id: formData.category_id, account_id: formData.account_id, amount: '', description: '' },
+                          ]);
+                        }
+                      }}
+                      className="w-4 h-4 m-0 accent-blue-500" />
+                    Split this transaction
+                  </label>
+                )}
+
+                {isSplit && formData.type !== 'transfer' && (
+                  <div className="flex flex-col gap-2.5">
+                    <div className="grid grid-cols-[minmax(0,1fr)_110px_32px] gap-2 t-th">
+                      <span>Category · account · title</span><span className="text-right">Amount</span><span />
+                    </div>
+                    {splits.map((split, i) => (
+                      <div key={i} className="grid grid-cols-[minmax(0,1fr)_110px_32px] gap-2 items-start pb-2.5 row-rule">
+                        <div className="flex flex-col gap-1.5 min-w-0">
+                          <select
+                            value={split.category_id}
+                            onChange={(e) =>
+                              setSplits((p) =>
+                                p.map((s, idx) => (idx === i ? { ...s, category_id: e.target.value } : s))
+                              )
+                            }
+                            className={fieldCls}
+                            aria-label="Split category"
+                          >
+                            <option value="">No category</option>
+                            {categories
+                              .filter((c) => c.type === formData.type || c.type === 'expense')
+                              .map((c) => (
+                                <option key={c.id} value={c.id}>
+                                  {c.name}
+                                </option>
+                              ))}
+                          </select>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <SelectCombobox
+                              items={accountItems}
+                              value={split.account_id || formData.account_id}
+                              onSelect={(id) =>
+                                setSplits((p) =>
+                                  p.map((s, idx) => (idx === i ? { ...s, account_id: id } : s))
+                                )
+                              }
+                              placeholder="Account…"
+                            />
+                            <input
+                              type="text"
+                              placeholder="Title"
+                              value={split.title}
+                              onChange={(e) =>
+                                setSplits((p) =>
+                                  p.map((s, idx) => (idx === i ? { ...s, title: e.target.value } : s))
+                                )
+                              }
+                              className={fieldCls}
+                            />
+                          </div>
+                        </div>
+                        <input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.01"
+                          required
+                          value={split.amount}
+                          aria-label="Split amount"
+                          onChange={(e) =>
+                            setSplits((p) =>
+                              p.map((s, idx) => (idx === i ? { ...s, amount: e.target.value } : s))
+                            )
+                          }
+                          className={cx(fieldCls, 'text-right tabular-nums no-mask')}
+                        />
+                        <IconButton
+                          bordered={false}
+                          className="w-8 h-9"
+                          disabled={splits.length <= 1}
+                          onClick={() => setSplits((p) => p.filter((_, idx) => idx !== i))}
+                          aria-label="Remove split"
+                          title="Remove split"
+                        >
+                          <Trash2 size={14} />
+                        </IconButton>
+                      </div>
+                    ))}
+                    <div className="flex items-center justify-between gap-3">
+                      <Button variant="ghost" size="sm"
+                        onClick={() => setSplits((p) => [...p, { title: '', category_id: '', account_id: '', amount: '', description: '' }])}>
+                        <Plus size={14} />Add line
+                      </Button>
+                      <span className={cx('text-[13px] font-semibold tabular-nums', splitMismatch ? 'text-red-400' : 'text-slate-300')}>
+                        {formatMoney(splitTotal, accCurrency)}{formData.amount && ` of ${formatMoney(Number(formData.amount), accCurrency)}`}
+                        {splitMismatch && ' · doesn’t match'}
+                      </span>
                     </div>
                   </div>
-                ))}
-                <div className="flex justify-between text-xs text-slate-400">
-                  <span>Split total: {displayCurrency} {splitTotal.toFixed(2)}{formData.amount && ` / ${displayCurrency} ${Number(formData.amount).toFixed(2)}`}</span>
-                  {formData.amount && Math.abs(splitTotal - Number(formData.amount)) > 0.001 && (
-                    <span className="text-red-400">Split total doesn't match amount</span>
-                  )}
-                </div>
+                )}
               </div>
             )}
-
-            {/* Notes */}
-            <div>
-              <label className={labelCls}>Notes</label>
-              <textarea value={formData.notes}
-                onChange={(e) => setFormData((f) => ({ ...f, notes: e.target.value }))}
-                className={inputCls} rows={2} />
-            </div>
-
-          </form>
+          </div>
         </div>
 
-        {/* Footer actions */}
-        <div className="px-6 py-4 border-t border-slate-800 flex items-center justify-end gap-3 shrink-0">
-          <button type="button" onClick={onClose}
-            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-sm rounded-xl border border-slate-700/60 transition-all">
-            Cancel
-          </button>
-          <button type="submit" form="txn-form" disabled={submitting}
-            className="px-5 py-2 bg-blue-600 hover:bg-blue-500 active:scale-[0.97] text-white text-sm font-semibold rounded-xl shadow-md shadow-blue-950/40 transition-all disabled:opacity-40 disabled:cursor-not-allowed">
-            {submitting ? 'Saving…' : editingTransaction ? 'Update' : 'Create'}
-          </button>
+        {/* Footer */}
+        <div className="flex flex-wrap items-center gap-2.5 px-5 py-3.5 rule-t shrink-0 pb-[max(14px,env(safe-area-inset-bottom))]">
+          {!isEditing && (
+            <label className="flex items-center gap-2 text-[13px] text-slate-100 cursor-pointer">
+              <input type="checkbox" checked={keepOpen} onChange={(e) => setKeepOpen(e.target.checked)} className="w-4 h-4 m-0 accent-blue-500" />
+              Add another after saving
+            </label>
+          )}
+          <span className="flex-1 min-w-0 text-xs font-semibold text-red-400 basis-full sm:basis-0 order-first sm:order-none" role="alert">{error}</span>
+          <Button variant="secondary" onClick={onClose} className="ml-auto sm:ml-0">Cancel</Button>
+          <Button type="submit" disabled={submitting} className="gap-2.5">
+            {submitting ? 'Saving…' : isEditing ? 'Save changes' : 'Save'}
+            <span className="hidden md:inline text-[11px] font-semibold px-[5px] py-px border border-app/60 leading-[1.4]">↵</span>
+          </Button>
         </div>
-      </div>
-    </div>
+      </form>
+    </div>,
+    document.body,
   );
 }

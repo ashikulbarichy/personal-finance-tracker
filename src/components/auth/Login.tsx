@@ -1,11 +1,58 @@
 import { useState } from 'react';
+import type { ReactNode } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
+import { Button, Field, Input } from '../ui';
 
-interface LoginProps {
-  onToggle: () => void;
+/** 28px accent square with a bold K + the "Keel" wordmark. */
+export function AuthBrand({ inverted }: { inverted?: boolean }) {
+  return (
+    <div className="flex items-center gap-2.5">
+      <div
+        className={
+          'w-7 h-7 grid place-items-center font-extrabold text-base shrink-0 ' +
+          (inverted ? 'bg-app text-blue-600' : 'bg-blue-600 text-app')
+        }
+      >
+        K
+      </div>
+      <span className={'text-[19px] font-extrabold tracking-[-0.02em] ' + (inverted ? 'text-app' : 'text-slate-100')}>Keel</span>
+    </div>
+  );
 }
 
-export function Login({ onToggle }: LoginProps) {
+/** Shared auth layout: solid accent panel on wide screens, 400px flush-left form column. */
+export function AuthLayout({ children }: { children: ReactNode }) {
+  return (
+    <div className="min-h-screen bg-app text-slate-100 flex">
+      <aside className="hidden lg:flex w-[44%] max-w-[620px] bg-blue-600 text-app flex-col justify-between p-12">
+        <AuthBrand inverted />
+        <div className="flex flex-col gap-4">
+          <p className="text-[40px] leading-[1.08] font-extrabold tracking-[-0.02em] max-w-[440px]">
+            Every account, every currency, one honest ledger.
+          </p>
+          <div className="h-[2px] w-16 bg-app" />
+          <p className="text-sm opacity-90 max-w-[380px]">
+            Track spending, budgets, loans and goals — on the web or installed on your phone.
+          </p>
+        </div>
+        <span className="text-xs opacity-75">Keel · personal finance</span>
+      </aside>
+      <main className="flex-1 flex items-center px-5 sm:px-10 lg:px-16 py-10">
+        <div className="w-full max-w-[400px]">{children}</div>
+      </main>
+    </div>
+  );
+}
+
+export function AuthError({ children }: { children: ReactNode }) {
+  return (
+    <div role="alert" className="border-l-2 border-red-500 bg-red-900 text-red-400 px-3.5 py-2.5 text-sm">
+      {children}
+    </div>
+  );
+}
+
+export function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -26,83 +73,56 @@ export function Login({ onToggle }: LoginProps) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#0b0f1a] text-slate-100">
-      <div className="max-w-md w-full space-y-8 p-8 bg-slate-900/60 border border-slate-800 rounded-2xl shadow-2xl shadow-black/50 backdrop-blur">
-        <div>
-          <h2 className="text-3xl font-bold text-slate-50">Sign in</h2>
-          <p className="mt-2 text-sm text-slate-400">
-            Welcome back to your finance tracker
-          </p>
-        </div>
-        <form className="mt-8 space-y-6" onSubmit={handleSubmit}>
-          {error && (
-            <div className="bg-red-900/40 border border-red-500/40 text-red-300 p-3 rounded-lg text-sm">
-              {error}
-            </div>
-          )}
-          <div className="space-y-4">
-            <div>
-              <label htmlFor="email" className="block text-sm font-medium text-slate-300">
-                Email address
-              </label>
-              <input
-                id="email"
-                name="email"
-                type="email"
-                autoComplete="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="mt-1 block w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
-            </div>
-            <div>
-              <label htmlFor="password" className="block text-sm font-medium text-slate-300">
-                Password
-              </label>
-              <input
-                id="password"
-                name="password"
-                type="password"
-                autoComplete="current-password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="mt-1 block w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
-            </div>
-            <div className="flex items-center justify-between">
-              <label className="inline-flex items-center gap-2 text-xs text-slate-400">
-                <input
-                  type="checkbox"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.target.checked)}
-                  className="rounded border-slate-600 text-blue-500 focus:ring-blue-500"
-                />
-                <span>Keep me logged in</span>
-              </label>
-            </div>
-          </div>
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-2.5 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white text-sm font-semibold rounded-xl shadow-lg shadow-blue-950/50 transition-all duration-150 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {loading ? 'Signing in...' : 'Sign in'}
-          </button>
-
-          <div className="text-center">
-            <button
-              type="button"
-              onClick={onToggle}
-              className="text-sm text-blue-400 hover:text-blue-300"
-            >
-              Don't have an account? Sign up
-            </button>
-          </div>
-        </form>
+    <AuthLayout>
+      <div className="lg:hidden mb-10"><AuthBrand /></div>
+      <div className="mb-7">
+        <div className="text-[13px] text-slate-400 mb-1">Sign in to Keel</div>
+        <h1 className="text-[28px] md:text-[32px] font-extrabold tracking-[-0.02em] leading-[1.12] text-slate-100">Welcome back</h1>
       </div>
-    </div>
+
+      <form className="flex flex-col gap-4 rule-t pt-5" onSubmit={handleSubmit}>
+        {error && <AuthError>{error}</AuthError>}
+        <Field label="Email address">
+          <Input
+            id="email"
+            name="email"
+            type="email"
+            autoComplete="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@example.com"
+            className="min-h-[44px]"
+          />
+        </Field>
+        <Field label="Password">
+          <Input
+            id="password"
+            name="password"
+            type="password"
+            autoComplete="current-password"
+            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="••••••••"
+            className="min-h-[44px]"
+          />
+        </Field>
+        <label className="inline-flex items-center gap-2 text-[13px] text-slate-300 select-none cursor-pointer self-start min-h-[32px]">
+          <input
+            type="checkbox"
+            checked={rememberMe}
+            onChange={(e) => setRememberMe(e.target.checked)}
+            className="w-4 h-4 accent-blue-600"
+          />
+          <span>Keep me logged in</span>
+        </label>
+
+        <Button type="submit" size="lg" block disabled={loading}>
+          {loading ? 'Signing in…' : 'Sign in'}
+        </Button>
+      </form>
+
+    </AuthLayout>
   );
 }

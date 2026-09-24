@@ -1,0 +1,164 @@
+/* ============================================================================
+ * THEME — single source of truth for all colors  ("Keel" / Modernist)
+ * ----------------------------------------------------------------------------
+ * Derived from the Modernist design system in /Personal Finance App Redesign,
+ * but with the design's near-mono RED accent swapped for a calm, muted BLUE
+ * (2026-09-24 — the red read as orange and was too harsh/bright for the eye).
+ * Still flat, architectural, zero corner radius and strong 2px rules. Ink on
+ * ground does ~95% of the work; the accent is kept for the primary action,
+ * spending marks and small emphasis.
+ *
+ * Values are stored as space-separated RGB channels ("R G B") so Tailwind
+ * opacity modifiers keep working (`bg-blue-600/20`). Tailwind consumes them as
+ * `rgb(var(--token) / <alpha-value>)`.
+ *
+ *   :root  → LIGHT theme (default)
+ *   .dark  → DARK theme (applied via <html class="dark">)
+ *
+ * Token roles (names kept stable so every existing utility re-themes):
+ *   slate-*    neutral ink ramp — LOW numbers = ink, HIGH numbers = fills
+ *   blue-*     the ACCENT — muted blue. bg-blue-600 = primary action.
+ *   emerald-*  "positive" — rendered as INK (income reads bold ink; no green
+ *              anywhere)
+ *   red/rose-* "negative / destructive" — muted brick red (its own hue, not
+ *              tied to the accent)
+ *   amber-*    rare warning — muted ochre
+ * ========================================================================= */
+
+:root {
+  /* ---- Surfaces ----------------------------------------------------------- */
+  --app: 243 242 242;          /* ground            #f3f2f2 */
+  --surface: 234 233 233;      /* sidebar / fills   #eae9e9 */
+  --card: 234 233 233;         /* surface cards     #eae9e9 */
+  --elevated: 243 242 242;     /* popovers/dialogs (ground + shadow) */
+  --hover: 228 227 227;        /* ink 7% over ground */
+  --line: 215 211 211;         /* row rule   (neutral-300) */
+  --line-strong: 159 157 157;  /* 2px divider (ink 40%)    */
+
+  /* ---- Neutral ink ramp (inverted: low = ink) ----------------------------- */
+  --slate-50: 20 18 17;
+  --slate-100: 32 30 29;       /* primary text  #201e1d */
+  --slate-200: 45 43 43;       /* neutral-900 */
+  --slate-300: 68 65 65;       /* neutral-800 — secondary figures */
+  --slate-400: 96 93 93;       /* neutral-700 — muted text */
+  --slate-500: 125 121 121;    /* neutral-600 */
+  --slate-600: 155 151 151;    /* neutral-500 */
+  --slate-700: 186 182 182;    /* neutral-400 */
+  --slate-800: 215 211 211;    /* neutral-300 */
+  --slate-900: 234 231 231;    /* neutral-200 — tinted fills, avatars */
+  --slate-950: 248 244 244;    /* neutral-100 */
+
+  /* ---- Accent — calm muted blue -------------------------------------------- */
+  --blue-100: 227 235 247;     /* accent-100 tint */
+  --blue-200: 199 216 240;
+  --blue-300: 145 175 224;
+  --blue-400: 30 60 110;       /* accent TEXT on light */
+  --blue-500: 58 106 189;      /* accent — marks, focus */
+  --blue-600: 42 87 163;       /* primary fill */
+  --blue-700: 30 68 133;       /* hover / pressed */
+
+  /* ---- Positive — ink ----------------------------------------------------- */
+  --emerald-200: 215 211 211;
+  --emerald-300: 96 93 93;
+  --emerald-400: 32 30 29;
+  --emerald-500: 32 30 29;
+  --emerald-600: 20 18 17;
+
+  /* ---- Negative — muted brick red ------------------------------------------ */
+  --red-300: 176 86 86;
+  --red-400: 176 86 86;        /* negative amount text */
+  --red-500: 189 95 95;        /* fill */
+  --red-600: 160 76 76;        /* hover */
+  --red-800: 232 201 201;      /* light badge border */
+  --red-900: 243 224 224;      /* light badge fill */
+
+  --rose-200: 236 201 207;
+  --rose-400: 176 86 106;
+  --rose-500: 189 95 115;
+  --rose-600: 160 76 95;
+
+  /* ---- Warning — muted ochre ---------------------------------------------- */
+  --amber-100: 245 234 212;
+  --amber-400: 138 100 30;
+  --amber-500: 168 124 44;
+  --amber-600: 120 86 24;
+
+  /* ---- Chart helpers ------------------------------------------------------ */
+  --chart-grid: 215 211 211;
+  --chart-hole: 243 242 242;
+
+  /* ---- Elevation (ink-tinted, tuned to the ground) ------------------------ */
+  --shadow-sm: 0 1px 2px rgb(45 43 43 / 0.14);
+  --shadow-md: 0 3px 10px rgb(45 43 43 / 0.16);
+  --shadow-lg: 0 12px 32px rgb(45 43 43 / 0.22);
+
+  color-scheme: light;
+}
+
+.dark {
+  /* ---- Surfaces ----------------------------------------------------------- */
+  --app: 22 20 19;             /* #161413 */
+  --surface: 31 29 28;         /* #1f1d1c */
+  --card: 31 29 28;
+  --elevated: 26 24 23;
+  --hover: 38 36 35;
+  --line: 52 49 48;
+  --line-strong: 110 108 107;
+
+  /* ---- Neutral ink ramp --------------------------------------------------- */
+  --slate-50: 250 248 248;
+  --slate-100: 243 242 242;
+  --slate-200: 225 222 222;
+  --slate-300: 200 196 196;
+  --slate-400: 160 156 156;
+  --slate-500: 128 124 124;
+  --slate-600: 100 96 96;
+  --slate-700: 70 67 66;
+  --slate-800: 52 49 48;
+  --slate-900: 40 38 37;
+  --slate-950: 30 28 27;
+
+  /* ---- Accent — calm muted blue -------------------------------------------- */
+  --blue-100: 24 38 61;        /* accent-900 tint */
+  --blue-200: 33 55 88;
+  --blue-300: 62 97 148;
+  --blue-400: 137 173 224;     /* accent TEXT on dark */
+  --blue-500: 108 152 214;
+  --blue-600: 86 132 201;
+  --blue-700: 108 152 214;     /* one step lighter on a dark ground */
+
+  /* ---- Positive — ink ----------------------------------------------------- */
+  --emerald-200: 70 67 66;
+  --emerald-300: 160 156 156;
+  --emerald-400: 243 242 242;
+  --emerald-500: 243 242 242;
+  --emerald-600: 250 248 248;
+
+  /* ---- Negative — muted brick red ------------------------------------------ */
+  --red-300: 217 155 155;
+  --red-400: 208 133 133;
+  --red-500: 201 106 106;
+  --red-600: 184 90 90;
+  --red-800: 110 53 53;
+  --red-900: 74 38 38;
+
+  --rose-200: 224 179 187;
+  --rose-400: 208 131 143;
+  --rose-500: 201 106 124;
+  --rose-600: 184 90 107;
+
+  /* ---- Warning ------------------------------------------------------------ */
+  --amber-100: 60 46 20;
+  --amber-400: 214 170 92;
+  --amber-500: 196 150 66;
+  --amber-600: 168 124 44;
+
+  --chart-grid: 52 49 48;
+  --chart-hole: 22 20 19;
+
+  --shadow-sm: 0 0 0 1px rgb(255 255 255 / 0.06), 0 1px 2px rgb(0 0 0 / 0.5);
+  --shadow-md: 0 0 0 1px rgb(255 255 255 / 0.07), 0 4px 14px rgb(0 0 0 / 0.55);
+  --shadow-lg: 0 0 0 1px rgb(255 255 255 / 0.08), 0 14px 40px rgb(0 0 0 / 0.65);
+
+  color-scheme: dark;
+}

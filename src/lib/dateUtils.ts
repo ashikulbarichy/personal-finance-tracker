@@ -138,6 +138,18 @@ export function formatDate(
     .replace('DD', d);
 }
 
+/** Fraction of the current month elapsed (0–1) — the "where you should be today" marker. */
+export function monthProgress(now = new Date()): number {
+  const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  return Math.min(1, now.getDate() / days);
+}
+
+/** Days remaining in the current month (today excluded). */
+export function daysLeftInMonth(now = new Date()): number {
+  const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  return days - now.getDate();
+}
+
 /** Common IANA timezones with display labels, grouped by region. */
 export const TIMEZONE_OPTIONS: { value: string; label: string }[] = [
   // UTC

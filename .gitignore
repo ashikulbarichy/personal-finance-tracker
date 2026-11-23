@@ -21,3 +21,10 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# Assistant & local design archives
+.claude/
+*.zip
+Personal Finance App Redesign/
+stitch_warm_obsidian_ecosystem/
+

@@ -1,4 +1,5 @@
-import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
+import { useEffect } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { AppShell } from './components/layout/AppShell';
 import { Dashboard } from './pages/Dashboard';
 import { Accounts } from './pages/Accounts';
@@ -19,6 +20,7 @@ import { DebtPlan } from './pages/DebtPlan';
 import { Investments } from './pages/Investments';
 import { TaxSummary } from './pages/TaxSummary';
 import { Login } from './components/auth/Login';
+import { ResetPassword } from './pages/ResetPassword';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { UserPrefsProvider } from './contexts/UserPrefsContext';
 import { ThemeProvider } from './contexts/ThemeContext';
@@ -36,25 +38,46 @@ function AppLoadingScreen() {
   );
 }
 
+function RecoveryWatcher() {
+  const { isRecovery } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const isRecoveryHash =
+      window.location.hash.includes('type=recovery') ||
+      window.location.search.includes('type=recovery');
+
+    if ((isRecovery || isRecoveryHash) && location.pathname !== '/reset-password') {
+      navigate('/reset-password', { replace: true });
+    }
+  }, [isRecovery, location.pathname, navigate]);
+
+  return null;
+}
+
 /** Sign-in only — new accounts can't be created from the app. */
 function AuthLayout() {
-  const { user } = useAuth();
+  const { user, isRecovery } = useAuth();
+  if (isRecovery) return <Navigate to="/reset-password" replace />;
   if (user) return <Navigate to="/dashboard" replace />;
   return <Login />;
 }
 
 function RequireAuth() {
-  const { user, loading } = useAuth();
+  const { user, loading, isRecovery } = useAuth();
   const location = useLocation();
 
   if (loading) return <AppLoadingScreen />;
+  if (isRecovery) return <Navigate to="/reset-password" replace />;
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   return <Outlet />;
 }
 
 function IndexRoute() {
-  const { user, loading } = useAuth();
+  const { user, loading, isRecovery } = useAuth();
   if (loading) return <AppLoadingScreen />;
+  if (isRecovery) return <Navigate to="/reset-password" replace />;
   return <Navigate to={user ? '/dashboard' : '/login'} replace />;
 }
 
@@ -66,10 +89,12 @@ function App() {
       <UserPrefsProvider>
       <ToastProvider>
       <BrowserRouter>
+        <RecoveryWatcher />
         <Routes>
           <Route path="/" element={<IndexRoute />} />
 
           <Route path="/login" element={<AuthLayout />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
           <Route path="/register" element={<Navigate to="/login" replace />} />
 
           <Route element={<RequireAuth />}>

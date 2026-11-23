@@ -44,14 +44,19 @@ function RecoveryWatcher() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const isRecoveryHash =
+    const isRecoveryUrl =
       window.location.hash.includes('type=recovery') ||
-      window.location.search.includes('type=recovery');
+      window.location.hash.includes('access_token=') ||
+      window.location.search.includes('type=recovery') ||
+      window.location.search.includes('code=') ||
+      window.location.search.includes('token_hash=');
 
-    if ((isRecovery || isRecoveryHash) && location.pathname !== '/reset-password') {
-      navigate('/reset-password', { replace: true });
+    if ((isRecovery || isRecoveryUrl) && location.pathname !== '/reset-password') {
+      const search = location.search || window.location.search;
+      const hash = window.location.hash;
+      navigate(`/reset-password${search}${hash}`, { replace: true });
     }
-  }, [isRecovery, location.pathname, navigate]);
+  }, [isRecovery, location.pathname, location.search, navigate]);
 
   return null;
 }

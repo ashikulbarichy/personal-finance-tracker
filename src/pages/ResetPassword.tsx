@@ -11,27 +11,136 @@ export function ResetPassword() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [sessionChecking, setSessionChecking] = useState(true);
+  const [hasValidSession, setHasValidSession] = useState(false);
   const [invalidToken, setInvalidToken] = useState(false);
 
-  const { user, loading: authLoading, isRecovery, clearRecovery } = useAuth();
+  const { clearRecovery } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
   useEffect(() => {
-    // Check for error parameters in the URL hash or query (Supabase returns errors in hash on expired/invalid links)
-    const hash = window.location.hash.startsWith('#')
-      ? window.location.hash.substring(1)
-      : window.location.hash;
-    const hashParams = new URLSearchParams(hash);
-    const searchParams = new URLSearchParams(window.location.search);
+    let isMounted = true;
 
-    const errorDesc = hashParams.get('error_description') || searchParams.get('error_description');
-    const errorCode = hashParams.get('error_code') || searchParams.get('error_code');
+    async function initSession() {
+      // 1. Check for error parameters in the URL hash or search (Supabase returns errors on expired/invalid links)
+      const hash = window.location.hash.startsWith('#')
+        ? window.location.hash.substring(1)
+        : window.location.hash;
+      const hashParams = new URLSearchParams(hash);
+      const searchParams = new URLSearchParams(window.location.search);
 
-    if (errorCode || errorDesc) {
-      setInvalidToken(true);
-      setError(errorDesc?.replace(/\+/g, ' ') || 'The password reset link is invalid or has expired.');
+      const errorDesc = hashParams.get('error_description') || searchParams.get('error_description');
+      const errorCode = hashParams.get('error_code') || searchParams.get('error_code');
+
+      if (errorCode || errorDesc) {
+        if (!isMounted) return;
+        setInvalidToken(true);
+        setError(errorDesc?.replace(/\+/g, ' ') || 'The password reset link is invalid or has expired.');
+        setSessionChecking(false);
+        return;
+      }
+
+      // 2. If PKCE 'code' query parameter is present, exchange it for an active session
+      const code = searchParams.get('code');
+      if (code) {
+        try {
+          const { data, error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+          if (!isMounted) return;
+          if (exchangeError) {
+            setInvalidToken(true);
+            setError(exchangeError.message);
+            setSessionChecking(false);
+            return;
+          }
+          if (data.session) {
+            setHasValidSession(true);
+            setSessionChecking(false);
+            return;
+          }
+        } catch (err: unknown) {
+          if (!isMounted) return;
+          setInvalidToken(true);
+          setError(err instanceof Error ? err.message : 'Failed to verify recovery code.');
+          setSessionChecking(false);
+          return;
+        }
+      }
+
+      // 3. If 'token_hash' query parameter is present, verify OTP
+      const tokenHash = searchParams.get('token_hash') || hashParams.get('token_hash');
+      if (tokenHash) {
+        try {
+          const { data, error: verifyError } = await supabase.auth.verifyOtp({
+            token_hash: tokenHash,
+            type: 'recovery',
+          });
+          if (!isMounted) return;
+          if (verifyError) {
+            setInvalidToken(true);
+            setError(verifyError.message);
+            setSessionChecking(false);
+            return;
+          }
+          if (data.session) {
+            setHasValidSession(true);
+            setSessionChecking(false);
+            return;
+          }
+        } catch (err: unknown) {
+          if (!isMounted) return;
+          setInvalidToken(true);
+          setError(err instanceof Error ? err.message : 'Failed to verify recovery token.');
+          setSessionChecking(false);
+          return;
+        }
+      }
+
+      // 4. Check if a session is already present (e.g. from hash tokens parsed by supabase-js)
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!isMounted) return;
+      if (session) {
+        setHasValidSession(true);
+        setSessionChecking(false);
+        return;
+      }
+
+      // 5. If hash contains access_token, give supabase-js a moment to parse it via onAuthStateChange
+      if (window.location.hash.includes('access_token')) {
+        const timeout = setTimeout(async () => {
+          if (!isMounted) return;
+          const { data: { session: retrySession } } = await supabase.auth.getSession();
+          if (retrySession) {
+            setHasValidSession(true);
+          } else {
+            setInvalidToken(true);
+            setError('Could not establish an authenticated recovery session. Please try requesting a new reset link.');
+          }
+          setSessionChecking(false);
+        }, 1200);
+
+        return () => clearTimeout(timeout);
+      }
+
+      // No token and no session found
+      setSessionChecking(false);
     }
+
+    initSession();
+
+    // Listen to auth state changes in case Supabase parses the token asynchronously
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!isMounted) return;
+      if (session && (event === 'PASSWORD_RECOVERY' || event === 'SIGNED_IN')) {
+        setHasValidSession(true);
+        setSessionChecking(false);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
   }, [location]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -50,6 +159,12 @@ export function ResetPassword() {
 
     setLoading(true);
     try {
+      // Ensure session is actually active before attempting updateUser
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        throw new Error('No active recovery session found. The link may have expired or was already used. Please request a new reset from Supabase dashboard.');
+      }
+
       const { error: updateError } = await supabase.auth.updateUser({
         password,
       });
@@ -73,15 +188,6 @@ export function ResetPassword() {
     }
   };
 
-  // Check if there is an active session or recovery token
-  const hasRecoveryToken =
-    typeof window !== 'undefined' &&
-    (window.location.hash.includes('access_token') ||
-      window.location.hash.includes('type=recovery') ||
-      window.location.search.includes('code='));
-
-  const noActiveSession = !authLoading && !user && !isRecovery && !hasRecoveryToken && !invalidToken;
-
   return (
     <AuthLayout>
       <div className="lg:hidden mb-10">
@@ -94,23 +200,19 @@ export function ResetPassword() {
         </h1>
       </div>
 
-      {invalidToken ? (
+      {sessionChecking ? (
+        <div className="flex flex-col gap-4 rule-t pt-5">
+          <p className="text-sm text-slate-400 font-medium animate-pulse">
+            Verifying recovery session…
+          </p>
+        </div>
+      ) : invalidToken || !hasValidSession ? (
         <div className="flex flex-col gap-5 rule-t pt-5">
-          <AuthError>{error || 'This password reset link is invalid or has expired.'}</AuthError>
+          <AuthError>
+            {error || 'No active password reset session found. The link may be invalid, expired, or already used.'}
+          </AuthError>
           <p className="text-sm text-slate-400">
             Please ask an administrator to send a new password reset link from the Supabase dashboard.
-          </p>
-          <Button variant="secondary" onClick={() => navigate('/login', { replace: true })}>
-            Back to Sign in
-          </Button>
-        </div>
-      ) : noActiveSession ? (
-        <div className="flex flex-col gap-5 rule-t pt-5">
-          <div className="border-l-2 border-slate-500 bg-slate-900 text-slate-300 px-3.5 py-3 text-sm">
-            No active password reset request found.
-          </div>
-          <p className="text-sm text-slate-400">
-            Password resets are managed by administrators. Please request a password reset directly from the Supabase dashboard.
           </p>
           <Button variant="secondary" onClick={() => navigate('/login', { replace: true })}>
             Back to Sign in

@@ -20,7 +20,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (typeof window === 'undefined') return false;
     return (
       window.location.hash.includes('type=recovery') ||
-      window.location.search.includes('type=recovery')
+      window.location.hash.includes('access_token=') ||
+      window.location.search.includes('type=recovery') ||
+      window.location.search.includes('code=') ||
+      window.location.search.includes('token_hash=')
     );
   });
 
@@ -31,7 +34,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const isRecoveryUrl =
       window.location.hash.includes('type=recovery') ||
+      window.location.hash.includes('access_token=') ||
       window.location.search.includes('type=recovery') ||
+      window.location.search.includes('code=') ||
+      window.location.search.includes('token_hash=') ||
       window.location.pathname === '/reset-password';
 
     const remember = localStorage.getItem('fin_remember_me');
